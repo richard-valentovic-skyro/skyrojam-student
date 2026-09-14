@@ -7,13 +7,11 @@
    give two numbers that disagree the moment one row is late. Everything the
    page derives (how many lunches are left, whether the credit is too low)
    comes out of that single balance through S.lunchesLeft. */
-(function (S) {
+SKYRO.page(function (S, root) {
   "use strict";
 
   var me = S.STUDENTS.filter(function (s) { return s.id === S.CURRENT_STUDENT_ID; })[0];
   var entries = S.LEDGER.filter(function (l) { return l.studentId === me.id; });
-
-  var root = S.mount();
 
   /* Slovak counts lunches in three shapes: 1 obed, 2–4 obedy, 5+ obedov. */
   function obed(n) { return n === 1 ? "obed" : n < 5 ? "obedy" : "obedov"; }
@@ -72,4 +70,4 @@
   /* Nothing here is interactive — one render and the page is done, so there is
      no bind() step to run after the innerHTML write. */
   render();
-})(window.SKYRO);
+});

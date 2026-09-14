@@ -7,12 +7,10 @@
    but a hover shadow, which told a screen-reader user nothing about which day
    the panel on the right was describing. The panel is also far from the row you
    clicked, so every selection is announced. */
-(function (S) {
+SKYRO.page(function (S, root) {
   "use strict";
 
   var active = 0;
-
-  var root = S.mount();
 
   /* Slovak dates here are all in September; the fixtures carry the day number
      only, so the month is spelled out once. */
@@ -61,7 +59,7 @@
             '<button class="btn soft grow">' + S.icon("close") + "Zrušiť</button></div>"
 
         : '<p class="pempty"><b>Objednávka je otvorená</b>' +
-            "Na tento deň si ešte môžete vybrať jedlo. Okno sa zatvára deň vopred o 14:00.</p>" +
+            "Na tento deň si ešte môžete vybrať jedlo. Okno sa zatvára o 14:00 v deň obeda.</p>" +
           '<div class="mt-m"><button class="btn block">' + S.icon("add") +
             "Objednať obed</button></div>") +
 
@@ -116,4 +114,4 @@
   }
 
   render();
-})(window.SKYRO);
+});

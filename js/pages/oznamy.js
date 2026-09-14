@@ -8,10 +8,8 @@
    accessible name, so a screen reader stepping through the articles heard
    "article, article, article" and had to enter each one to find out what it
    was. Each article is labelled by its own heading here. */
-(function (S) {
+SKYRO.page(function (S, root) {
   "use strict";
-
-  var root = S.mount();
 
   function post(p, i) {
     var titleId = "post-" + i;
@@ -47,4 +45,4 @@
   }
 
   render();
-})(window.SKYRO);
+});

@@ -8,10 +8,8 @@
    rather than stored next to them. It is the same reason menu.js derives the
    balance instead of accumulating it: a second copy of a number is a second
    thing that can drift out of date. */
-(function (S) {
+SKYRO.page(function (S, root) {
   "use strict";
-
-  var root = S.mount();
 
   function count() {
     return S.ORDERS.reduce(function (n, g) { return n + g.rows.length; }, 0);
@@ -47,4 +45,4 @@
   }
 
   render();
-})(window.SKYRO);
+});
