@@ -23,7 +23,7 @@ window.SKYRO = window.SKYRO || {};
 (function (S) {
   "use strict";
 
-  /* /kredit and /kredit.html are the same page; the nav speaks filenames. */
+  /* /tyzden and /tyzden.html are the same page; the nav speaks filenames. */
   function currentFile() {
     var f = window.location.pathname.split("/").pop();
     if (!f) return "index.html";
