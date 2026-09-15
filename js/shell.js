@@ -15,10 +15,19 @@
         arrives. A header showing "0,00 €" because /me has not answered yet
         would send a student to the canteen office over nothing.
 
-     3. THE PAGE NEVER WAITS FOR IT. The session already carries the balance
-        whenever sign-in returned one; only an account that arrived without
-        one costs a request, and that request runs beside the page, never in
-        front of it. If it fails the header simply stays quiet. */
+     3. THE PAGE NEVER WAITS FOR IT. The read the header makes runs beside
+        the page, never in front of it. If it fails the header simply stays
+        quiet.
+
+     4. ONE READ, ONE NUMBER. GET /menu/today already answers with
+        balanceCents, so the home screen hands that number over itself
+        (S.ownsBalance) and the shell makes no call at all there. Two reads
+        of one balance can disagree; one cannot.
+
+   WHO IS SIGNED IN comes from the session the login screen wrote — identity
+   only, never a balance. The account carries classCode (the Slovak trieda),
+   and it sits beside the name because that is how a canteen tells two
+   Matejs apart. */
 window.SKYRO = window.SKYRO || {};
 (function (S) {
   "use strict";
@@ -59,15 +68,43 @@ window.SKYRO = window.SKYRO || {};
       '<span class="balv"></span></span>';
   }
 
+  /* Name and trieda, out of the session. The class is a second span inside
+     .wn rather than more text in it, so the rule that hides the name below
+     560px hides the class with it and the corner never crowds; it stays
+     hidden until there is a real trieda to show, exactly like the balance. */
+  function identityHtml(app) {
+    var who = (S.session && S.session.get && S.session.get()) || null;
+    var name = (who && who.name) || app.account || "";
+    var cls = (who && who.classCode) || "";
+    /* The space inside the span, not only the margin: without a character
+       between them a screen reader reads "Matej Hrušovský3.A" as one word,
+       and so does anything else that takes the element's text. */
+    return '<span class="wn">' + S.esc(name) +
+      '<span class="wc" style="margin-left:5px;font-size:13.5px;font-weight:600;' +
+      'color:var(--ink-3)"' + (cls ? "" : " hidden") + ">" +
+      (cls ? " " + S.esc(cls) : "") + "</span></span>";
+  }
+
   function topbar(app) {
     return '<header class="topbar glass">' +
       '<span class="beta">Beta</span>' +
       '<div class="tbend">' +
         balanceHtml() +
         '<div class="who"><span class="av">' + S.icon("person") + "</span>" +
-        '<span class="wn">' + S.esc(app.account) + "</span>" +
+        identityHtml(app) +
         S.icon("expand_more", "cv") + "</div>" +
       "</div></header>";
+  }
+
+  /* A session written before classCode existed has no trieda in it, and /me
+     carries one. Filling it in costs no extra request — it is the same
+     response the balance comes from — and nothing is invented: an account
+     with no trieda leaves the slot hidden. */
+  function updateClassCode(code) {
+    var slot = S.$(".who .wc");
+    if (!slot || !code) return;
+    slot.textContent = " " + String(code);  // the separator, same as above
+    slot.hidden = false;
   }
 
   /* The one way the balance on screen ever changes. A page that has just
@@ -79,27 +116,53 @@ window.SKYRO = window.SKYRO || {};
     var slot = S.$("#bal");
     if (!slot) return;
 
-    var v = Number(cents);
+    /* A NUMBER OR NOTHING. Number(null) is 0 and Number("") is 0, so a caller
+       whose read failed and passes null would otherwise post "0,00 €" in the
+       header and send a student to the canteen office over nothing. Anything
+       that is not a finite number means we learned nothing, and what stands
+       stays — rule 2: nothing is invented. */
     var out = S.$(".balv", slot);
-    if (!out || !isFinite(v)) return; // we know nothing new; leave what stands
+    if (!out || typeof cents !== "number" || !isFinite(cents)) return;
 
-    out.textContent = S.eur(v);
+    out.textContent = S.eur(cents);
     slot.hidden = false;
   }
 
-  /* Whatever sign-in already knew, immediately; one /me only if it knew
-     nothing. Both paths end at updateBalance, so there is still exactly one
-     place where a balance reaches the screen. */
+  /* The opposite move, and the only other thing that touches the slot: what
+     stands is now known to be wrong. A write went through — money moved — and
+     the read that would have said what the account holds did not answer. An
+     empty slot says "we do not know", which is true; the number from before
+     the order says the account holds 5,50 € more than it does, which is not.
+     A later successful read fills it back in. */
+  function clearBalance() {
+    var slot = S.$("#bal");
+    if (!slot) return;
+    var out = S.$(".balv", slot);
+    if (out) out.textContent = "";
+    slot.hidden = true;
+  }
+
+  /* At most one /me per page load, and never a cached balance: the session
+     holds an identity only. A manager can top the account up at the window,
+     and another tab can order, between two page loads — a number cached at
+     sign-in goes stale with nothing to invalidate it.
+
+     A page that is already fetching the balance as part of its own data says
+     so by setting S.ownsBalance before boot runs, and the shell then makes no
+     call at all. GET /menu/today answers with balanceCents, so the home
+     screen does exactly that: one read, one number, nothing to disagree with.
+     Whoever fetched it ends at updateBalance either way, so there is still
+     one place where a balance reaches the screen. */
   function fillBalance() {
-    var account = S.session && S.session.get ? S.session.get() : null;
-    if (account && typeof account.balanceCents === "number") {
-      updateBalance(account.balanceCents);
-      return;
-    }
+    if (S.ownsBalance) return;      // the page has it; a second read can only disagree
     if (!S.api || !S.api.me) return;
 
     S.api.me().then(function (acc) {
-      if (acc && typeof acc.balanceCents === "number") updateBalance(acc.balanceCents);
+      if (!acc) return;
+      if (typeof acc.balanceCents === "number") updateBalance(acc.balanceCents);
+      /* Free of charge, out of the same response: a session written before
+         classCode existed gets its trieda filled in. */
+      updateClassCode(acc.classCode);
     }, function () {
       /* An empty slot is the honest outcome of a failed read. The page's own
          loader shows the retry if the data the page needs is missing too. */
@@ -139,6 +202,10 @@ window.SKYRO = window.SKYRO || {};
     document.fonts.load('24px "Material Symbols Outlined"').then(show, show);
   }
 
-  Object.assign(S, { mount: mount, currentFile: currentFile, updateBalance: updateBalance });
+  Object.assign(S, {
+    mount: mount, currentFile: currentFile,
+    updateBalance: updateBalance, clearBalance: clearBalance,
+    updateClassCode: updateClassCode
+  });
   revealIconsWhenReady();
 })(window.SKYRO);

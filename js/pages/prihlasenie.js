@@ -104,8 +104,22 @@ SKYRO.pageWithoutShell(function (S) {
           });
         }
 
-        /* The account the server authenticated, not the one we typed. */
-        S.session.set(account);
+        /* The account the server authenticated, not the one we typed — and
+           identity only. A balance stored here would be read by the header on
+           every later page and could not be invalidated when it changed.
+
+           classCode is the Slovak trieda and is part of who this is: POST
+           /auth/login sends it, the topbar shows it beside the name, and it
+           does not go stale the way a balance does — a student changes class
+           once a year, not once a lunch. An account with no trieda stores
+           null and the header simply shows nothing. */
+        S.session.set({
+          id: account.id,
+          name: account.name,
+          username: account.username,
+          role: account.role,
+          classCode: account.classCode || null
+        });
         return "";
       },
       function (err) {

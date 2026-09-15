@@ -23,6 +23,11 @@
       leaves the day looking open again and the cancellation is stated in the
       panel instead of being dressed up as an order.
 
+   4. A HOLIDAY IS NOT A MISSED DEADLINE. day.isServing === false means the
+      canteen is not cooking that day; it arrives with meals: [] and open:
+      false, and "Menu zatiaľ nie je zverejnené" would be a promise nobody
+      intends to keep. Every line about such a day says the kitchen is shut.
+
    One piece of state: `active`, the index into the week. The tiles and the
    rows are two controls for that same value, so both carry aria-pressed; the
    panel they drive sits far from the row that was clicked, so every selection
@@ -32,25 +37,42 @@ var page = function (S, root) {
 
   var days = (S.__week && S.__week.days) || [];
 
-  /* The three statuses the API sends, in the design system's vocabulary.
-     Anything else is reported as unknown rather than guessed at. */
-  var STATUS = {
-    ORDERED:   { state: "ok",  label: "Objednané" },
-    SERVED:    { state: "ok",  label: "Vydané" },
-    CANCELLED: { state: "bad", label: "Zrušené" }
-  };
+  /* The state of an order, in the design system's vocabulary. An order row
+     from /orders carries a ready-made chip and it is used as it came; the
+     myOrder inside /menu/week carries only a status, so S.STATUS_CHIP — the
+     same table the server keeps — turns that into the same words. A status
+     neither knows is reported as unknown rather than guessed at.
+
+     Not S.chip: ui.js loads after data.js and takes that name for the markup
+     helper, so the data layer's version is out of reach here. */
+  function orderChip(o) {
+    if (o && o.chip && o.chip.l) return o.chip;
+    var key = String((o && o.status) || "").toUpperCase();
+    return (S.STATUS_CHIP && S.STATUS_CHIP[key]) || { st: "open", l: "Stav neznámy" };
+  }
+
+  /* The canteen is not cooking at all. Different from a closed day, and it
+     comes from the server, never from a calendar we keep. */
+  function holiday(d) {
+    return !!d && d.isServing === false;
+  }
 
   /* A cancelled order is not an order any more: it leaves no marker on the
      tile, does not claim the day, and does not stop an open day from offering
-     the way back to the menu. */
+     the way back to the menu. AUTO_CANCELLED counts — the system dropped the
+     lunch, which for the student is the same fact. */
+  function cancelled(o) {
+    return !!o && (o.status === "CANCELLED" || o.status === "AUTO_CANCELLED");
+  }
+
   function activeOrder(d) {
     var o = d && d.myOrder;
-    return o && o.status !== "CANCELLED" ? o : null;
+    return o && !cancelled(o) ? o : null;
   }
 
   function cancelledOrder(d) {
     var o = d && d.myOrder;
-    return o && o.status === "CANCELLED" ? o : null;
+    return cancelled(o) ? o : null;
   }
 
   /* The day worth landing on: the first one still open, because that is the
@@ -70,13 +92,14 @@ var page = function (S, root) {
      chip carries both open and closed: the word is what differs. */
   function dayState(d) {
     var o = activeOrder(d);
-    if (o) return STATUS[o.status] || { state: "open", label: "Stav neznámy" };
-    return { state: "open", label: d.open ? "Otvorené" : "Uzavreté" };
+    if (o) return orderChip(o);
+    if (holiday(d)) return { st: "open", l: "Nevarí sa" };
+    return { st: "open", l: d.open ? "Otvorené" : "Uzavreté" };
   }
 
   function dayChip(d) {
     var s = dayState(d);
-    return S.chip(s.state, s.label);
+    return S.chip(s.st, s.l);
   }
 
   function soldOut(m) {
@@ -167,14 +190,25 @@ var page = function (S, root) {
       };
     }
 
+    /* Before the two lines about ordering: on a holiday there is nothing to
+       order, nothing was published and nothing is late. */
+    if (holiday(d)) return { main: "Nevarí sa", sub: "Jedáleň v tento deň nevarí" };
+
     var count = (d.meals || []).length;
     if (!d.open) return { main: "Bez objednávky", sub: "Objednávanie je uzavreté" };
     if (!count) return { main: "Bez objednávky", sub: "Menu zatiaľ nie je zverejnené" };
     return { main: "Bez objednávky", sub: count + " " + S.plural(count) + " v ponuke" };
   }
 
+  /* "Ut 15" is all the tile has room for and all a sighted reader needs
+     beside the other four. The accessible name is the server's own
+     shortLabel — "15. septembra 2026" — so the button is not announced as an
+     abbreviation and a bare number; the full label, weekday and all, is what
+     the panel shows and what the live region reads on selection. */
   function dayTile(d, i) {
+    var name = d.shortLabel || d.label || "";
     return '<button type="button" class="day" data-i="' + i + '"' +
+      (name ? ' aria-label="' + S.esc(name) + '"' : "") +
       ' aria-pressed="' + (i === active) + '">' +
       '<span class="dw">' + S.esc(d.weekday) + "</span>" +
       '<span class="dd">' + S.esc(d.dateNumber) + "</span>" +
@@ -205,6 +239,10 @@ var page = function (S, root) {
     if (o.status === "SERVED") {
       return '<p class="note">Obed bol vydaný.</p>';
     }
+    if (holiday(d)) {
+      return '<p class="note">Jedáleň v tento deň nevarí, takže sa tento obed ' +
+        "nevydá. Ozvite sa vedúcej jedálne.</p>";
+    }
     if (!d.open) {
       return '<p class="note">Objednávanie na tento deň je uzavreté. ' +
         "Objednávku už nezmeníte.</p>";
@@ -224,6 +262,13 @@ var page = function (S, root) {
       body = mealBlock(orderedMeal(d, o), false) +
         '<div class="rule-line"></div>' + orderNote(d, o);
 
+    } else if (holiday(d)) {
+      /* No menu, no deadline, nothing to wait for — and no link to a menu
+         that will never be published. */
+      body = '<p class="pempty"><b>V tento deň sa nevarí</b>' +
+        (c ? "Objednávka na tento deň bola zrušená. " : "") +
+        "Jedáleň v tento deň nevarí — obedy sa nevydávajú a objednať sa nedá.</p>";
+
     } else if (d.open) {
       body =
         (c ? '<p class="note mb-m">Objednávka na tento deň bola zrušená.</p>' : "") +
@@ -238,8 +283,11 @@ var page = function (S, root) {
     } else {
       /* Closed and nothing ordered: the calm end of the story. No button, no
          link, nothing that suggests this day can still be changed. */
+      /* "ste zrušili" would be a claim about who did it, and AUTO_CANCELLED
+         is the system dropping the lunch, not the student. The passive is
+         the only wording true of both. */
       body = '<p class="pempty"><b>Objednávanie je uzavreté</b>' +
-        (c ? "Objednávku na tento deň ste zrušili. " : "") +
+        (c ? "Objednávka na tento deň bola zrušená. " : "") +
         "Na tento deň si obed už neobjednáte.</p>";
     }
 
@@ -311,7 +359,7 @@ var page = function (S, root) {
     var d = days[active];
     var t = rowText(d);
     S.announce(S.$("#live"),
-      d.label + ". " + t.main + (t.sub ? ", " + t.sub : "") + ". " + dayState(d).label + ".");
+      d.label + ". " + t.main + (t.sub ? ", " + t.sub : "") + ". " + dayState(d).l + ".");
   }
 
   render();

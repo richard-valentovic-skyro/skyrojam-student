@@ -27,10 +27,25 @@ var page = function (S, root) {
 
   var list = S.__announcements || [];
 
-  /* createdAt + ", " + author, but an announcement that arrives without an
-     author must not render a line ending in a stray comma. */
+  /* THE TIMESTAMP IS THE SERVER'S SENTENCE, NOT OURS. Every announcement
+     arrives with `meta` already written — "dnes 9:02", "včera 08:05",
+     "11. septembra 2026 13:05" — worded by the server against the school's
+     own clock. Printing it as it came is what keeps a phone with a wrong
+     timezone from telling a student that yesterday's notice is from today.
+     `createdAt` is the ISO that label was made from and is never shown raw:
+     an ISO timestamp under a notice is not a date, it is a log line. If meta
+     is ever missing, the date half of createdAt is spelled out numerically —
+     a transform of the string, with no clock read anywhere on this page. */
+  function stamp(p) {
+    if (p.meta) return String(p.meta);
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(p.createdAt || ""));
+    return m ? Number(m[3]) + ". " + Number(m[2]) + ". " + m[1] : "";
+  }
+
+  /* The timestamp, then who posted it — but an announcement that arrives
+     without one of the two must not render a line with a stray comma in it. */
   function meta(p) {
-    return [p.createdAt, p.author].filter(function (part) {
+    return [stamp(p), p.author].filter(function (part) {
       return part !== null && part !== undefined && String(part) !== "";
     }).map(S.esc).join(", ");
   }
@@ -67,8 +82,10 @@ var page = function (S, root) {
   render();
 };
 
-/* boot shows the spinner until this settles, and its own retry if it does
-   not, so nothing below the loader has to think about failure. */
+/* GET /announcements -> { announcements: [{ id, title, body, important,
+   author, createdAt, meta }] }. boot shows the spinner until this settles,
+   and its own retry if it does not, so nothing below the loader has to think
+   about failure. */
 page.load = function (S) {
   return S.api.announcements().then(function (data) {
     S.__announcements = (data && data.announcements) || [];

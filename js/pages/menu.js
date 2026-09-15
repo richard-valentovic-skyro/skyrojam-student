@@ -25,9 +25,18 @@
       costs nothing. The button, the price and the wording all have to say
       that, or the student believes they are paying twice.
 
+   5. A HOLIDAY IS NOT A MISSED DEADLINE. day.isServing === false means the
+      canteen is not cooking that day at all; day.open === false with
+      isServing true means the ordering window has passed. Both leave the
+      page unpressable, and they are told apart in every sentence — a student
+      who reads "uzávierka uplynula" on a school holiday goes looking for a
+      deadline that never existed.
+
    Money is integer cents end to end and is only ever read through S.eur().
-   The balance itself lives in the topbar — this page never draws one; it
-   re-reads /me after every write so the header can. */
+   The balance itself lives in the topbar — this page never draws one. GET
+   /menu/today already answers with balanceCents, so the balance arrives with
+   the menu in one read and is handed straight to the header; only after a
+   write does this page go and ask again. */
 var page = function (S, root) {
   "use strict";
 
@@ -38,12 +47,16 @@ var page = function (S, root) {
      considers today's is one, and is shown as such. */
   var myOrder = data.myOrder && data.myOrder.status !== "CANCELLED" ? data.myOrder : null;
 
-  /* null means "we do not know the balance" — after a /me that failed, the
-     only honest thing to do is stop gating on it and let the server refuse. */
-  var me = S.__me || null;
+  /* The balance rides along with the menu, so there is no second read for it
+     and nothing that can disagree with it. null means "we do not know" —
+     after a read that failed, the only honest thing to do is stop gating on
+     it and let the server refuse. */
+  var balanceCents = typeof data.balanceCents === "number" ? data.balanceCents : null;
 
-  /* The one fact that decides whether this page offers anything at all. */
+  /* The two facts that decide whether this page offers anything at all, and
+     which of the two closed days this is. Both are the server's. */
   var open = day.open === true;
+  var holiday = day.isServing === false;
 
   var selected = null;  // a mealOnDayId, never an index
   var busy = null;      // "primary" | "cancel" while that control's write is open
@@ -75,7 +88,7 @@ var page = function (S, root) {
   function selectable(m) { return !soldOut(m); }
 
   function knownBalance() {
-    return me && typeof me.balanceCents === "number" ? me.balanceCents : null;
+    return typeof balanceCents === "number" ? balanceCents : null;
   }
 
   /* An order that already exists is paid for, so affordability stops being a
@@ -100,7 +113,7 @@ var page = function (S, root) {
   /* What the action area is for, right now. Everything below reads this
      rather than re-deriving the same three conditions five times. */
   function mode() {
-    if (!open) return "closed";
+    if (holiday || !open) return "closed";
     if (!selected) return "idle";
     if (!myOrder) return "order";
     return selected === myOrder.mealOnDayId ? "ordered" : "change";
@@ -182,7 +195,18 @@ var page = function (S, root) {
       "</span></button>";
   }
 
+  /* Two empty days that look the same and mean opposite things: on a holiday
+     there is nothing to wait for, so nothing here invites the student back. */
   function emptyHtml() {
+    if (holiday) {
+      return '<div class="empty">' + S.icon("event_busy") +
+        "<b>V tento deň sa nevarí</b>" +
+        '<p class="boot-msg">Jedáleň v tento deň nevarí a obedy sa nevydávajú. ' +
+        "Pozrite si zvyšok týždňa.</p>" +
+        '<a class="btn" href="tyzden.html" style="text-decoration:none">' +
+          S.icon("calendar_month") + "Otvoriť týždeň</a>" +
+        "</div>";
+    }
     return '<div class="empty">' + S.icon("restaurant_menu") +
       "<b>Na tento deň nie je zostavené menu</b>" +
       '<p class="boot-msg">Ponuku pripravuje vedúca jedálne. Skúste to neskôr.</p></div>';
@@ -271,6 +295,12 @@ var page = function (S, root) {
   function noteHtml() {
     if (error) return '<p class="note warn" role="alert">' + S.esc(error) + "</p>";
 
+    /* Before the deadline sentence, never instead of it by accident: the
+       kitchen is not late, it is closed. */
+    if (holiday) {
+      return '<p class="note">V tento deň jedáleň nevarí. Obedy sa nevydávajú, ' +
+        "takže si na tento deň nič neobjednáte.</p>";
+    }
     if (!open) {
       return '<p class="note">Objednávanie na tento deň je uzavreté. Rozpis už odišiel ' +
         "do kuchyne — zmeny rieši vedúca jedálne.</p>";
@@ -301,9 +331,11 @@ var page = function (S, root) {
   /* --------------------------------------------------------------- view */
 
   function render(focus) {
-    var head = open
-      ? S.chip("ok", "Objednávanie je otvorené")
-      : S.chip("open", "Objednávanie je uzavreté");
+    var head = holiday
+      ? S.chip("open", "V tento deň sa nevarí")
+      : open
+        ? S.chip("ok", "Objednávanie je otvorené")
+        : S.chip("open", "Objednávanie je uzavreté");
 
     /* With no menu and no order there is nothing to summarise and nothing to
        press, so the sidebar — and the column it would sit in — goes away
@@ -399,21 +431,43 @@ var page = function (S, root) {
 
   /* -------------------------------------------------------------- writes */
 
-  /* The balance is the topbar's to show, so all this page does is re-read it
-     after a write and hand it over. A /me that fails does not turn a
-     successful order into a failed one — it only means we stop claiming to
-     know what the account holds. */
-  function refreshMe() {
+  /* POST, PATCH and DELETE all answer { id, status } and say nothing about
+     money, so a balance that just changed has to be read back. At load it
+     came with the menu; here the smallest thing that carries it is /me, and
+     this is the only call this page makes beyond /menu/today and the write
+     itself. A read that fails does not turn a successful order into a failed
+     one — it only means we stop claiming to know what the account holds, so
+     the sentence that would have named the balance goes unsaid. */
+  function refreshBalance() {
     return S.api.me().then(
       function (acc) {
         if (acc && typeof acc.balanceCents === "number") {
-          me = acc;
-          if (typeof S.updateBalance === "function") S.updateBalance(acc.balanceCents);
+          balanceCents = acc.balanceCents;
+          showBalance();
         }
         return acc;
       },
-      function () { me = null; return null; }
+      function () {
+        /* The order stands — the server said so — but what the account now
+           holds is no longer something we know. The header is emptied rather
+           than left showing the number from before the money moved. */
+        balanceCents = null;
+        if (typeof S.clearBalance === "function") S.clearBalance();
+        return null;
+      }
     );
+  }
+
+  /* The one line that puts a balance in the topbar. The number is the
+     server's, passed through untouched — no arithmetic, here or anywhere.
+     An unknown balance is not a zero balance: a menu that came without one
+     leaves the header exactly as it found it — empty at first paint — rather
+     than posting a 0,00 € nobody's account holds. (A read that fails after a
+     write is the other case, and that one empties the header instead: there
+     the number on screen is known to be wrong, not merely unknown.) */
+  function showBalance() {
+    if (balanceCents === null) return;
+    if (typeof S.updateBalance === "function") S.updateBalance(balanceCents);
   }
 
   /* Every write goes through here so the rules hold in one place: one write
@@ -433,7 +487,7 @@ var page = function (S, root) {
       /* The new balance is part of what just happened, so it is fetched
          before anything is redrawn — the header and the page then change
          at the same moment instead of a beat apart. */
-      return refreshMe().then(function () { return resp; });
+      return refreshBalance().then(function () { return resp; });
     }).then(
       function (resp) {
         busy = null;
@@ -549,17 +603,21 @@ var page = function (S, root) {
   }
 
   initSelection();
+  showBalance();
   render();
 };
 
-/* Two reads, one spinner: boot shows the loading state until both land and
-   the retry if either does not. Today's menu without the account is only
-   half a page — the price is affordable or it is not. */
+/* One read, one spinner, one number. GET /menu/today answers with the day,
+   the meals, this student's order AND balanceCents, so the account costs no
+   second request — and two reads of one balance can disagree while one
+   cannot. The shell is told to keep its hands off the header (below) before
+   boot runs, so nothing else asks. */
 page.load = function (S) {
-  return Promise.all([S.api.menuToday(), S.api.me()]).then(function (res) {
-    S.__menu = res[0] || {};
-    S.__me = res[1] || null;
-  });
+  return S.api.menuToday().then(function (data) { S.__menu = data || {}; });
 };
+
+/* Read by the shell at mount, which happens after this file is evaluated and
+   before page.load runs: this page fills the topbar's balance itself. */
+SKYRO.ownsBalance = true;
 
 SKYRO.page(page);
