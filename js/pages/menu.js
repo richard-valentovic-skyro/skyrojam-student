@@ -1,251 +1,565 @@
-/* Today's menu: pick a lunch, see what it costs, confirm before the deadline.
+/* Today's menu — the student's home screen: what the canteen is cooking
+   today, which of it is theirs, and the one write that changes that.
 
-   Three invariants worth stating, the first two learned from bugs found here:
+   Four things this page must never get wrong. The first three are bugs the
+   version it replaces actually shipped:
 
-   1. MONEY IS DERIVED, NEVER ACCUMULATED. A student eats one lunch a day, so
-      the balance after ordering is a constant. An earlier version subtracted
-      on every confirm while switching meals cleared the confirmed flag, so
-      confirm → change your mind → confirm charged twice and could drive the
-      balance negative. Deriving it makes a second charge impossible.
+   1. THE SERVER OWNS THE DAY. No clock, no deadline constant, no countdown.
+      day.open is a fact the server sends; when it is false nothing here is
+      pressable and the page says so plainly. A browser on a school laptop
+      does not get a vote on when the kitchen closes.
 
-   2. RE-RENDERING MUST NOT EAT THE KEYBOARD. render() replaces innerHTML, so
-      whatever had focus is destroyed. Every path that re-renders says what to
-      focus afterwards, or a keyboard user is dumped back to the top of the
-      document on every click.
+   2. ORDERING IS BY mealOnDayId. Not a meal id, not an index into whatever
+      array happened to be rendered. The selection is that one string, so a
+      menu that changes under us can never turn a click on "Šošovicová
+      polievka" into an order for whatever is fourth today.
 
-   3. THE ORDER BELONGS TO THE SERVER. Confirming is a request, not a local
-      flag: the button says it is working, and nothing on screen moves until
-      S.api.placeOrder resolves. Success is read out of the response — the
-      balance and the recorded meal both — so the page never shows an order
-      the canteen does not have. Failure leaves every one of these variables
-      untouched and puts the API layer's own Slovak into the note slot. */
-SKYRO.page(function (S, root) {
+   3. NOTHING MOVES UNTIL THE SERVER SAYS SO. A write disables its control,
+      says "Ukladá sa…", and leaves the meals, the order and the balance
+      exactly as they are until the API resolves. On failure the only thing
+      that changes is the sentence under the button. A second click while a
+      write is open is dropped here rather than queued behind the first.
+
+   4. A CHANGE IS NOT A PURCHASE. Once today's order exists the money has
+      already moved; swapping meals releases one seat and takes another and
+      costs nothing. The button, the price and the wording all have to say
+      that, or the student believes they are paying twice.
+
+   Money is integer cents end to end and is only ever read through S.eur().
+   The balance itself lives in the topbar — this page never draws one; it
+   re-reads /me after every write so the header can. */
+var page = function (S, root) {
   "use strict";
 
-  var DEADLINE_HOUR = 14;
-  var WINDOW_HOURS = 6; // ordering opens at 08:00
+  var data    = S.__menu || {};
+  var day     = data.day || {};
+  var meals   = data.meals || [];
+  /* A cancelled order is not an order; anything else the server still
+     considers today's is one, and is shown as such. */
+  var myOrder = data.myOrder && data.myOrder.status !== "CANCELLED" ? data.myOrder : null;
 
-  /* The app is set on Monday 14 September 2026. The server wants the ISO
-     date, not the Slovak label in the page header, so it is named here once
-     rather than spelled out at the call site. */
-  var TODAY = "2026-09-14";
+  /* null means "we do not know the balance" — after a /me that failed, the
+     only honest thing to do is stop gating on it and let the server refuse. */
+  var me = S.__me || null;
 
-  var me = S.STUDENTS.filter(function (s) { return s.id === S.CURRENT_STUDENT_ID; })[0];
+  /* The one fact that decides whether this page offers anything at all. */
+  var open = day.open === true;
 
-  var selected = 4;
-  var confirmed = false;
-  var saving = false; // a placeOrder is in flight; further clicks are dropped
-  var error = null;   // the last failed write, in the API layer's own Slovak
-  var left = null; // seconds to the deadline; null until the clock starts
+  var selected = null;  // a mealOnDayId, never an index
+  var busy = null;      // "primary" | "cancel" while that control's write is open
+  var error = null;     // the last refusal, in Slovak, shown under the button
 
-  function pad2(v) { return v < 10 ? "0" + v : "" + v; }
+  /* ------------------------------------------------------------ reading */
 
-  /* What is left once today's lunch is paid for. Before the order exists that
-     is a prediction, so it is subtracted here; afterwards the money has
-     actually moved and me.balance is the figure the server sent back, which
-     is shown as it stands. Subtracting from it again is exactly the double
-     charge invariant 1 is about. */
-  function balance() {
-    return confirmed ? me.balance : Number((me.balance - S.LUNCH_PRICE).toFixed(2));
+  function mealById(id) {
+    var found = null;
+    meals.forEach(function (m) { if (m.mealOnDayId === id) found = m; });
+    return found;
   }
 
-  /* Once the order is confirmed the money has already left the account, so
-     affordability is no longer a question about today — without this a
-     student who spent their last 5,50 EUR on this very lunch would be told,
-     the second it is ordered, that they cannot afford one. */
-  function affordable() { return confirmed || me.balance >= S.LUNCH_PRICE; }
-  function windowOpen() { return left === null || left > 0; }
-  function canOrder() { return windowOpen() && affordable() && !confirmed && !saving; }
-
-  function clock() {
-    if (left === null) return "--:--:--";
-    return pad2(Math.floor(left / 3600)) + ":" + pad2(Math.floor((left % 3600) / 60)) + ":" + pad2(left % 60);
+  function isMine(m) {
+    return !!(myOrder && m && myOrder.mealOnDayId === m.mealOnDayId);
   }
 
-  function mealCard(m, i) {
-    return '<button type="button" class="mcard ' + S.esc(m.tint) + '" data-i="' + i + '"' +
-      ' aria-pressed="' + (i === selected) + '">' +
-      '<span class="cat">' + S.esc(m.cat) + "</span>" +
-      '<span class="disc">' + S.icon(i === selected ? "check" : m.ic) + "</span>" +
-      '<span class="mn">' + S.esc(m.n) + "</span>" +
-      '<span class="md">' + S.esc(m.d) + "</span>" +
+  /* capacity 0 is unlimited. The seat we already hold is counted in
+     orderCount, so a full meal we ordered ourselves is not sold out *to us* —
+     without this the student's own lunch goes grey the moment it fills. */
+  function soldOut(m) {
+    return !!m && m.capacity > 0 && m.orderCount >= m.capacity && !isMine(m);
+  }
+
+  function seatsLeft(m) {
+    return Math.max(0, Number(m.capacity || 0) - Number(m.orderCount || 0));
+  }
+
+  function selectable(m) { return !soldOut(m); }
+
+  function knownBalance() {
+    return me && typeof me.balanceCents === "number" ? me.balanceCents : null;
+  }
+
+  /* An order that already exists is paid for, so affordability stops being a
+     question about today — otherwise a student who spent their last 5,50 €
+     on this very lunch is told, the second it is ordered, that they cannot
+     afford one. An unknown balance is not a refusal: the server decides. */
+  function affordable() {
+    if (myOrder) return true;
+    var b = knownBalance();
+    return b === null || b >= S.LUNCH_PRICE_CENTS;
+  }
+
+  function missingCents() {
+    var b = knownBalance();
+    return b === null ? 0 : Math.max(0, S.LUNCH_PRICE_CENTS - b);
+  }
+
+  /* The order exists but we were not told its id, so there is nothing to
+     address a change or a cancel to. Rare, and better said than pretended. */
+  function orderAddressable() { return !!(myOrder && myOrder.id); }
+
+  /* What the action area is for, right now. Everything below reads this
+     rather than re-deriving the same three conditions five times. */
+  function mode() {
+    if (!open) return "closed";
+    if (!selected) return "idle";
+    if (!myOrder) return "order";
+    return selected === myOrder.mealOnDayId ? "ordered" : "change";
+  }
+
+  /* The meal the summary should describe, and the meal the order sits on.
+     An order for something not in today's list still has a name to show. */
+  function view(m, fallbackName, fallbackSlot) {
+    var cat = S.category(m ? m.category : null);
+    return {
+      name: m ? m.name : fallbackName,
+      slot: m ? m.slot : fallbackSlot,
+      label: cat.label,
+      tint: cat.tint,
+      icon: cat.icon
+    };
+  }
+
+  function selectedView() {
+    var m = mealById(selected);
+    return m ? view(m) : null;
+  }
+
+  function orderedView() {
+    if (!myOrder) return null;
+    var m = mealById(myOrder.mealOnDayId);
+    if (m) return view(m);
+    var meal = myOrder.meal || {};
+    return view(null, meal.name, myOrder.slot);
+  }
+
+  /* Pick an opening selection: the order if there is one, otherwise the first
+     meal that can still be had. A sold-out meal is never the selection. */
+  function initSelection() {
+    if (myOrder && mealById(myOrder.mealOnDayId)) {
+      selected = myOrder.mealOnDayId;
+      return;
+    }
+    selected = null;
+    meals.forEach(function (m) {
+      if (selected === null && selectable(m)) selected = m.mealOnDayId;
+    });
+  }
+
+  /* ------------------------------------------------------------- markup */
+
+  /* The API sends allergens as plain strings; the label is the data layer's
+     to decide, the markup is the design system's. "veg" is the green one. */
+  function allergenTag(a) {
+    return '<span class="tag' + (a === "veg" ? " veg" : "") + '">' +
+      S.esc(S.allergenLabel(a)) + "</span>";
+  }
+
+  function mealCard(m) {
+    var cat = S.category(m.category);
+    var gone = soldOut(m);
+    var sel = m.mealOnDayId === selected;
+    var press = open && !gone;
+
+    return '<button type="button" class="mcard ' + S.esc(cat.tint) + (gone ? " gone" : "") + '"' +
+      ' data-id="' + S.esc(m.mealOnDayId) + '"' +
+      ' aria-pressed="' + (sel ? "true" : "false") + '"' +
+      (press ? "" : " disabled") + ">" +
+      '<span class="cat">' + S.esc(cat.label) + "</span>" +
+      '<span class="disc">' + S.icon(gone ? "block" : sel ? "check" : cat.icon) + "</span>" +
+      '<span class="mn">' + S.esc(m.name) + "</span>" +
+      '<span class="md">' + S.esc(m.desc) + "</span>" +
       '<span class="rule"></span>' +
-      '<span class="mf">' + m.a.map(S.tag).join("") +
-        '<span class="no">Obed ' + (i + 1) + "</span></span></button>";
+      '<span class="mf">' +
+        (m.allergens || []).map(allergenTag).join("") +
+        (gone ? S.chip("bad", "Vypredané") : isMine(m) ? S.chip("ok", "Objednané") : "") +
+        /* A limit is worth watching before it runs out, so the count is on
+           the card the whole time — until it is nil, when the chip above has
+           already said it and "ostáva 0" is only noise. */
+        (m.capacity > 0 && !gone
+          ? '<span class="cap">ostáva ' + S.esc(seatsLeft(m)) + " z " + S.esc(m.capacity) + "</span>"
+          : "") +
+        '<span class="no">Obed ' + S.esc(m.slot) + "</span>" +
+      "</span></button>";
   }
 
-  /* The note under the button must never promise something the deadline has
-     already taken away. */
+  function emptyHtml() {
+    return '<div class="empty">' + S.icon("restaurant_menu") +
+      "<b>Na tento deň nie je zostavené menu</b>" +
+      '<p class="boot-msg">Ponuku pripravuje vedúca jedálne. Skúste to neskôr.</p></div>';
+  }
+
+  function summaryHtml() {
+    var m = mode();
+    var sel = selectedView();
+    var ord = orderedView();
+    var shown = m === "closed" ? (ord || sel) : sel;
+
+    var head, right;
+    if (m === "change") {
+      head = "Nová voľba";
+      right = "";
+    } else if (myOrder) {
+      head = "Vaša objednávka";
+      right = S.chip("ok", "Objednané");
+    } else {
+      head = "Vaša voľba";
+      /* One lunch, one price. Shown before the order, not after it — the
+         money has moved by then and repeating it reads like a second bill. */
+      right = '<span class="pd money">' + S.esc(S.eur(S.LUNCH_PRICE_CENTS)) + "</span>";
+    }
+
+    var body = shown
+      ? '<div class="dmeal"><span class="disc ' + S.esc(shown.tint) + '">' + S.icon(shown.icon) + "</span>" +
+          '<div><div class="dn">' + S.esc(shown.name) + "</div>" +
+          '<div class="dsub">Obed ' + S.esc(shown.slot) + " · " + S.esc(shown.label) + "</div></div></div>"
+      : '<p class="note">' +
+          (myOrder ? "Objednávku nevieme zobraziť." : "Dnes nemáte objednaný obed.") + "</p>";
+
+    /* In change mode the panel shows where the student is going, so it also
+       has to keep saying where they are — the order is still the old meal
+       until the server says otherwise. */
+    var footer = m === "change" && ord
+      ? '<div class="rule-line"></div>' +
+        '<div class="row between"><span class="cdlab">Teraz objednané</span>' +
+        '<span style="font-size:12.5px;font-weight:800;text-align:right">' + S.esc(ord.name) + "</span></div>"
+      : "";
+
+    return '<div class="plain order-summary">' +
+      '<div class="ph"><span class="pd">' + S.esc(head) + "</span>" + right + "</div>" +
+      body + footer + "</div>";
+  }
+
+  function primaryHtml() {
+    var m = mode();
+    var working = busy === "primary";
+    var ic, label, qty = "";
+
+    if (m === "change") {
+      ic = "swap_horiz";
+      label = "Zmeniť obed";
+    } else if (m === "ordered") {
+      ic = "check_circle";
+      label = "Obed je objednaný";
+    } else {
+      ic = "check";
+      label = "Objednať obed";
+      qty = '<span class="qty">' + S.esc(S.eur(S.LUNCH_PRICE_CENTS)) + "</span>";
+    }
+
+    var disabled = busy !== null || m === "closed" || m === "idle" || m === "ordered" ||
+      (m === "order" && !affordable()) ||
+      (m === "change" && !orderAddressable());
+
+    return '<button class="btn block" id="confirm" type="button"' +
+      (disabled ? " disabled" : "") + (working ? ' aria-busy="true"' : "") + ">" +
+      S.icon(working ? "progress_activity" : ic) +
+      (working ? "Ukladá sa…" : S.esc(label)) +
+      (working ? "" : qty) + "</button>";
+  }
+
+  function cancelHtml() {
+    if (!open || !myOrder || !orderAddressable()) return "";
+    var working = busy === "cancel";
+    return '<button class="btn soft block" id="cancel" type="button"' +
+      (busy !== null ? " disabled" : "") + (working ? ' aria-busy="true"' : "") + ">" +
+      S.icon(working ? "progress_activity" : "close") +
+      (working ? "Ukladá sa…" : "Zrušiť objednávku") + "</button>";
+  }
+
+  /* One slot, one sentence, in priority order: a refusal outranks everything,
+     then the day, then the money, then what the button is about to do. */
   function noteHtml() {
-    /* A write that failed outranks anything else this slot has to say, and
-       the words are the API layer's: already Slovak, already safe to show. */
-    if (error) {
-      return '<p class="note warn" role="alert">' + S.esc(error) + "</p>";
+    if (error) return '<p class="note warn" role="alert">' + S.esc(error) + "</p>";
+
+    if (!open) {
+      return '<p class="note">Objednávanie na tento deň je uzavreté. Rozpis už odišiel ' +
+        "do kuchyne — zmeny rieši vedúca jedálne.</p>";
     }
-    if (!windowOpen()) {
-      return '<p class="note warn">Objednávanie na dnes je uzavreté. Rozpis už odišiel ' +
-        "do kuchyne, zmeny rieši vedúca jedálne.</p>";
+    if (myOrder && !orderAddressable()) {
+      return '<p class="note">Objednávka je zapísaná. Ak ju chcete zmeniť alebo zrušiť, ' +
+        "obnovte stránku.</p>";
     }
-    if (!affordable()) {
+    if (!meals.length) return "";
+    if (!selected) {
+      return '<p class="note">Všetky dnešné jedlá sú vypredané. Skúste to zajtra ' +
+        "alebo sa spýtajte vedúcej jedálne.</p>";
+    }
+    if (mode() === "order" && !affordable()) {
       return '<p class="note warn">Na obed nemáte dosť kreditu. Chýba ' +
-        S.eur(Number((S.LUNCH_PRICE - me.balance).toFixed(2))) +
-        " — požiadajte vedúcu jedálne o dobitie.</p>";
+        S.esc(S.eur(missingCents())) + " — požiadajte vedúcu jedálne o dobitie.</p>";
     }
-    return '<p class="note">Objednávku môžete zmeniť až do 14:00. Potom sa rozpis ' +
-      "odosiela do kuchyne.</p>";
+    if (mode() === "change") {
+      return '<p class="note">Zmena jedla je bez ďalšej platby — obed máte zaplatený.</p>';
+    }
+    if (myOrder) {
+      return '<p class="note">Objednávku môžete zmeniť alebo zrušiť, kým je deň otvorený.</p>';
+    }
+    return '<p class="note">Obed stojí ' + S.esc(S.eur(S.LUNCH_PRICE_CENTS)) +
+      " a odpíše sa z kreditu pri objednaní.</p>";
   }
 
-  function render(focusSel) {
-    var m = S.MEALS[selected];
-    var pct = left === null ? 0 : Math.min(100, 100 - (left / (WINDOW_HOURS * 3600)) * 100);
+  /* --------------------------------------------------------------- view */
+
+  function render(focus) {
+    var head = open
+      ? S.chip("ok", "Objednávanie je otvorené")
+      : S.chip("open", "Objednávanie je uzavreté");
+
+    /* With no menu and no order there is nothing to summarise and nothing to
+       press, so the sidebar — and the column it would sit in — goes away
+       rather than standing there holding a dead button. */
+    var aside = meals.length > 0 || !!myOrder;
 
     root.innerHTML =
-      S.pageHead("Dnešné menu", "Pondelok 14. septembra", S.iconBtn("notifications", "Oznámenia")) +
-      '<div class="split main-aside-slim">' +
+      S.pageHead("Dnešné menu", day.label || "Dnes", head) +
+      '<div class="split' + (aside ? " main-aside-slim" : "") + '">' +
         "<div>" +
-          '<div class="gl" id="meals-label">Vyberte si jedlo na dnes</div>' +
-          '<div class="cards" id="meals" role="group" aria-labelledby="meals-label">' +
-            S.MEALS.map(mealCard).join("") + "</div>" +
+          '<div class="gl" id="meals-label">' +
+            (open && meals.length ? "Vyberte si jedlo na dnes" : "Dnešná ponuka") + "</div>" +
+          (meals.length
+            ? '<div class="cards" id="meals" role="group" aria-labelledby="meals-label">' +
+                meals.map(mealCard).join("") + "</div>"
+            : emptyHtml()) +
         "</div>" +
 
-        /* Below 1280px this stops being a sidebar and becomes the phone's
-           action bar, pinned to the bottom of the viewport. Otherwise the
-           confirm button sits ~2000px below the fold and picking a meal
-           appears to do nothing at all. */
-        '<aside class="aside sticky stack l order-bar">' +
-          '<div class="cdcard order-hide">' +
-            '<div class="cdtop"><div>' +
-              '<div class="cdlab">Uzávierka objednávok</div>' +
-              '<div class="cdsub">' + (windowOpen() ? "okno sa zatvára o 14:00" : "okno je zatvorené") + "</div>" +
-            '</div><div class="cdval" id="cd">' + clock() + "</div></div>" +
-            '<div class="track"><i style="width:' + pct + '%"></i></div>' +
-          "</div>" +
-
-          '<div class="plain order-summary">' +
-            '<div class="ph"><span class="pd">Vaša voľba</span>' +
-              '<span class="pd money">' + S.eur(S.LUNCH_PRICE) + "</span></div>" +
-            '<div class="dmeal"><span class="disc ' + S.esc(m.tint) + '">' + S.icon(m.ic) + "</span>" +
-              '<div><div class="dn">' + S.esc(m.n) + "</div>" +
-              '<div class="dsub">Obed ' + (selected + 1) + " · " + S.esc(m.cat) + "</div></div></div>" +
-            '<div class="rule-line order-hide"></div>' +
-            '<div class="row between order-hide"><span class="cdlab">Zostatok po objednávke</span>' +
-              '<span class="money" style="font-size:15px;color:' +
-                (affordable() ? "var(--ink)" : "var(--c-rose)") + '">' +
-                S.eur(balance()) + "</span></div>" +
-          "</div>" +
-
-          '<button class="btn block" id="confirm"' + (canOrder() ? "" : " disabled") +
-            (saving ? ' aria-busy="true"' : "") + ">" +
-            S.icon(saving ? "progress_activity" : confirmed ? "check_circle" : "check") +
-            (saving ? "Ukladá sa…" : confirmed ? "Objednávka potvrdená" : "Potvrdiť objednávku") +
-            '<span class="qty">' + S.eur(S.LUNCH_PRICE) + "</span></button>" +
-
+        /* Below 1280px the sidebar becomes the phone's action bar, pinned to
+           the bottom — otherwise the button sits ~2000px below the fold and
+           picking a meal appears to do nothing. A closed day has no action,
+           so it stays an ordinary block rather than a bar with nothing in it. */
+        (aside ?
+        '<aside class="aside sticky stack l' + (open ? " order-bar" : "") + '">' +
+          summaryHtml() +
+          (open ? (meals.length ? primaryHtml() : "") + cancelHtml() : "") +
           /* The note slot is hidden in the phone's action bar, where there is
-             room for the choice and the button and nothing else. A failed
-             order is the one thing that has to be readable there too, so for
-             as long as it is showing the slot keeps its place. */
-          (error
-            ? "<div>" + noteHtml() + "</div>"
-            : '<div class="order-hide">' + noteHtml() + "</div>") +
-        "</aside>" +
+             room for the choice and the button and nothing else. A refusal is
+             the one thing that has to be readable there too. */
+          (error ? "<div>" + noteHtml() + "</div>"
+                 : '<div class="order-hide">' + noteHtml() + "</div>") +
+        "</aside>" : "") +
       "</div>";
 
     bind();
+    if (focus) applyFocus(focus);
+  }
 
-    /* Put the keyboard back where it was. Without this every click sends
-       focus to <body> and a keyboard user restarts from the top. */
-    if (focusSel) {
-      var el = S.$(focusSel);
-      if (el) el.focus();
+  /* render() replaces innerHTML, so whatever had focus is destroyed. Every
+     path that re-renders says where the keyboard should land, and the chain
+     below guarantees it lands somewhere — never on <body>. */
+  function applyFocus(focus) {
+    var el = null;
+    if (focus.card) {
+      S.$$("#meals .mcard").forEach(function (b) {
+        if (b.getAttribute("data-id") === focus.card) el = b;
+      });
+    } else if (focus.sel) {
+      el = S.$(focus.sel);
     }
+    if (!el || el.disabled) el = S.$("#confirm");
+    if (!el || el.disabled) el = root; // <main tabindex="-1">
+    if (el && el.focus) el.focus();
   }
 
   function bind() {
     S.$$("#meals .mcard").forEach(function (btn) {
       btn.addEventListener("click", function () {
-        var i = Number(btn.getAttribute("data-i"));
-        if (i === selected) return;
-        selected = i;
-        /* Swapping meals is a swap, never a second order: `confirmed` is
-           left alone, so the balance cannot move again. */
-        render('#meals .mcard[data-i="' + i + '"]');
-        /* The summary that changed may be off-screen on a phone, so say it. */
-        S.announce(S.$("#live"), "Vybrané: " + S.MEALS[i].n + ", " + S.eur(S.LUNCH_PRICE) + ".");
+        /* A disabled button fires no click in a browser; this is the same
+           rule stated where it can be read, for the day the markup slips. */
+        if (busy !== null || !open || btn.disabled) return;
+        var id = btn.getAttribute("data-id");
+        var m = mealById(id);
+        if (!m || !selectable(m) || id === selected) return;
+
+        /* Choosing is local and free: it changes what the button will do,
+           never what the canteen has recorded. */
+        selected = id;
+        error = null;
+        render({ card: id });
+        S.announce(S.$("#live"), "Vybrané: " + m.name + ".");
       });
     });
 
-    var confirmBtn = S.$("#confirm");
-    if (confirmBtn) {
-      confirmBtn.addEventListener("click", function () {
-        /* canOrder() is false while a request is open, so a second click is
-           dropped right here instead of queueing a second order behind the
-           first. The disabled button makes that hard to do; a double click,
-           a screen reader and a slow line make it easy again. */
-        if (!canOrder()) return;
+    var primary = S.$("#confirm");
+    if (primary) {
+      primary.addEventListener("click", function () {
+        if (primary.disabled) return;
+        var m = mode();
+        if (m === "order") placeOrder();
+        else if (m === "change") changeOrder();
+      });
+    }
 
-        /* Working, not done: the only thing that changes is the button. The
-           balance, the meal and the confirmed state stay exactly as they are
-           until the canteen says otherwise. */
-        saving = true;
-        error = null;
-        render("#confirm");
-
-        S.api.placeOrder(TODAY, selected).then(
-          function (resp) {
-            saving = false;
-            confirmed = true;
-
-            /* The server's figure, never ours. resp.charged tells us whether
-               it actually debited — one lunch per student per day, so an
-               order that replaces today's is an update and charges nothing —
-               and either way resp.balance is what the account now holds. */
-            me.balance = resp.balance;
-
-            /* It also says which meal it recorded. That is the one to show,
-               not the card the student may have clicked while waiting. */
-            var mealId = Number(resp.mealId);
-            if (S.MEALS[mealId]) selected = mealId;
-
-            render("#confirm");
-            S.announce(S.$("#live"), "Objednávka potvrdená. " + S.MEALS[selected].n +
-              (resp.charged ? ". Odpísané " + S.eur(S.LUNCH_PRICE) : "") +
-              ", zostatok " + S.eur(balance()) + ".");
-          },
-          /* Two-argument then rather than .catch(): a bug thrown while
-             re-rendering above is a bug, and must not reach the student
-             dressed up as a canteen that refused the order. */
-          function (err) {
-            /* Nothing was ordered and nothing was charged, so nothing here
-               moves except the button, which goes back to being pressable.
-               render() then puts the keyboard back on it. */
-            saving = false;
-            error = err && err.message;
-            render("#confirm");
-          }
-        );
+    var drop = S.$("#cancel");
+    if (drop) {
+      drop.addEventListener("click", function () {
+        if (drop.disabled) return;
+        cancelOrder();
       });
     }
   }
 
-  /* The clock starts only after the page is up, so the markup never ships a
-     stale time. Only the digits are rewritten each second — a full render
-     would destroy focus once per second. */
-  function tick() {
-    var now = new Date();
-    var end = new Date(now);
-    end.setHours(DEADLINE_HOUR, 0, 0, 0);
-    var was = windowOpen();
-    left = Math.max(0, Math.floor((end - now) / 1000));
+  /* -------------------------------------------------------------- writes */
 
-    var cd = S.$("#cd");
-    if (cd) cd.textContent = clock();
-
-    /* The deadline passing changes what the page may offer, so that one
-       moment does warrant a re-render. */
-    if (was && !windowOpen()) render();
+  /* The balance is the topbar's to show, so all this page does is re-read it
+     after a write and hand it over. A /me that fails does not turn a
+     successful order into a failed one — it only means we stop claiming to
+     know what the account holds. */
+  function refreshMe() {
+    return S.api.me().then(
+      function (acc) {
+        if (acc && typeof acc.balanceCents === "number") {
+          me = acc;
+          if (typeof S.updateBalance === "function") S.updateBalance(acc.balanceCents);
+        }
+        return acc;
+      },
+      function () { me = null; return null; }
+    );
   }
 
+  /* Every write goes through here so the rules hold in one place: one write
+     at a time, the control says it is working, and on failure nothing on
+     screen moves except the sentence under the button. */
+  function submit(which, call, busyFocus, failFocus, done) {
+    if (busy !== null) return;
+
+    busy = which;
+    error = null;
+    /* The control that was pressed is disabled for the duration, and a
+       disabled button cannot hold focus — so the keyboard is parked on the
+       meal card the write is about, which stays pressable throughout. */
+    render(busyFocus);
+
+    call().then(function (resp) {
+      /* The new balance is part of what just happened, so it is fetched
+         before anything is redrawn — the header and the page then change
+         at the same moment instead of a beat apart. */
+      return refreshMe().then(function () { return resp; });
+    }).then(
+      function (resp) {
+        busy = null;
+        done(resp);
+      },
+      /* Two-argument then rather than .catch(): a bug thrown while rendering
+         success must not reach the student dressed as a refused order. */
+      function (err) {
+        busy = null;
+        error = refusal(err);
+        /* Nothing was ordered and nothing was charged, so nothing moves but
+           the sentence — and the keyboard goes back on the control to retry. */
+        render(failFocus);
+      }
+    );
+  }
+
+  /* err.message is always honest Slovak. These three cases have something
+     more useful to say about what to do next. */
+  function refusal(err) {
+    var code = err && err.code;
+    if (code === "SOLD_OUT") return "Toto jedlo sa medzitým vypredalo. Vyberte si, prosím, iné.";
+    if (code === "INSUFFICIENT_FUNDS") {
+      return "Na obed nemáte dosť kreditu. O dobitie požiadajte vedúcu jedálne.";
+    }
+    if (code === "DEADLINE") {
+      return "Objednávanie na tento deň sa medzitým uzavrelo. Obnovte stránku.";
+    }
+    return (err && err.message) || "Nastala chyba. Skúste to znova.";
+  }
+
+  /* A confirmed write has consequences the page can state exactly: one seat
+     moves, and it is ours. This is bookkeeping after the fact, not an
+     optimistic guess — nothing here runs unless the server already agreed. */
+  function takeSeat(id, delta) {
+    var m = mealById(id);
+    if (m) m.orderCount = Math.max(0, Number(m.orderCount || 0) + delta);
+  }
+
+  function recordOrder(resp, mealOnDayId) {
+    var m = mealById(mealOnDayId);
+    myOrder = {
+      id: resp && resp.id ? resp.id : null,
+      mealOnDayId: mealOnDayId,
+      slot: m ? m.slot : null,
+      status: (resp && resp.status) || "ORDERED",
+      meal: m ? { name: m.name, category: m.category } : {}
+    };
+    meals.forEach(function (x) { x.orderedByMe = x.mealOnDayId === mealOnDayId; });
+    selected = mealOnDayId;
+  }
+
+  function balanceSentence() {
+    var b = knownBalance();
+    return b === null ? "" : " Zostatok " + S.eur(b) + ".";
+  }
+
+  function placeOrder() {
+    var id = selected;
+    submit(
+      "primary",
+      function () { return S.api.placeOrder(id); },
+      { card: id },
+      { sel: "#confirm" },
+      function (resp) {
+        takeSeat(id, 1);
+        recordOrder(resp, id);
+        render({ card: id });
+        S.announce(S.$("#live"), "Obed objednaný: " + ((mealById(id) || {}).name || "") +
+          ". Odpísané " + S.eur(S.LUNCH_PRICE_CENTS) + "." + balanceSentence());
+      }
+    );
+  }
+
+  function changeOrder() {
+    var id = selected;
+    var from = myOrder.mealOnDayId;
+    submit(
+      "primary",
+      function () { return S.api.changeOrder(myOrder.id, id); },
+      { card: id },
+      { sel: "#confirm" },
+      function (resp) {
+        /* One seat released, one taken, and no money in either direction. */
+        takeSeat(from, -1);
+        takeSeat(id, 1);
+        recordOrder(resp, id);
+        render({ card: id });
+        S.announce(S.$("#live"), "Objednávka zmenená na " + ((mealById(id) || {}).name || "") +
+          ". Bez ďalšej platby.");
+      }
+    );
+  }
+
+  function cancelOrder() {
+    var from = myOrder.mealOnDayId;
+    submit(
+      "cancel",
+      function () { return S.api.cancelOrder(myOrder.id); },
+      { card: from },
+      { sel: "#cancel" },
+      function () {
+        takeSeat(from, -1);
+        myOrder = null;
+        meals.forEach(function (x) { x.orderedByMe = false; });
+        /* The released seat may be the only one on the menu; re-deriving the
+           selection is how a sold-out day stays impossible to order from. */
+        if (!selected || !selectable(mealById(selected))) initSelection();
+        render({ sel: "#confirm" });
+        S.announce(S.$("#live"), "Objednávka zrušená." + balanceSentence());
+      }
+    );
+  }
+
+  initSelection();
   render();
-  tick();
-  window.setInterval(tick, 1000);
-});
+};
+
+/* Two reads, one spinner: boot shows the loading state until both land and
+   the retry if either does not. Today's menu without the account is only
+   half a page — the price is affordable or it is not. */
+page.load = function (S) {
+  return Promise.all([S.api.menuToday(), S.api.me()]).then(function (res) {
+    S.__menu = res[0] || {};
+    S.__me = res[1] || null;
+  });
+};
+
+SKYRO.page(page);

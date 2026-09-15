@@ -1,117 +1,326 @@
 /* This week: five day tiles, the week's schedule, and the detail of whichever
    day is selected.
 
-   One piece of state — `active`, the index into S.WEEK. The tiles and the rows
-   are two controls for that same value, so both carry aria-pressed; the React
-   build put the selected state on the tiles only and left the rows with nothing
-   but a hover shadow, which told a screen-reader user nothing about which day
-   the panel on the right was describing. The panel is also far from the row you
-   clicked, so every selection is announced. */
-SKYRO.page(function (S, root) {
+   WHAT THIS PAGE IS NOT IS AN ORDERING SCREEN. Ordering lives on today's menu,
+   where the price, the balance and the server's own answer to POST /orders all
+   are. A second confirm button here would be a second place that can disagree
+   with the canteen about what a student ordered, so every path that could
+   order is a link to index.html instead.
+
+   Everything else on the page is the server's word, reported as it stands:
+
+   1. WHETHER A DAY IS OPEN is day.open and nothing else. There is no clock
+      here, no deadline constant and no countdown — the previous build derived
+      the window from the browser's own time, which put a phone with a wrong
+      timezone an hour out of step with the kitchen.
+
+   2. WHETHER A MEAL CAN STILL BE TAKEN is capacity and orderCount. capacity 0
+      means unlimited; otherwise orderCount >= capacity is sold out and the
+      meal says so rather than looking available until the order is refused.
+
+   3. WHAT THE STUDENT ORDERED is day.myOrder — including a cancelled one. The
+      chip and the tile marker describe what stands NOW, so a cancelled order
+      leaves the day looking open again and the cancellation is stated in the
+      panel instead of being dressed up as an order.
+
+   One piece of state: `active`, the index into the week. The tiles and the
+   rows are two controls for that same value, so both carry aria-pressed; the
+   panel they drive sits far from the row that was clicked, so every selection
+   is also announced. */
+var page = function (S, root) {
   "use strict";
 
-  var active = 0;
+  var days = (S.__week && S.__week.days) || [];
 
-  /* Slovak dates here are all in September; the fixtures carry the day number
-     only, so the month is spelled out once. */
-  function dayLabel(d) { return d.w + " " + d.d + ". septembra"; }
+  /* The three statuses the API sends, in the design system's vocabulary.
+     Anything else is reported as unknown rather than guessed at. */
+  var STATUS = {
+    ORDERED:   { state: "ok",  label: "Objednané" },
+    SERVED:    { state: "ok",  label: "Vydané" },
+    CANCELLED: { state: "bad", label: "Zrušené" }
+  };
 
-  function mealOf(d) { return d.i === null ? null : S.MEALS[d.i]; }
+  /* A cancelled order is not an order any more: it leaves no marker on the
+     tile, does not claim the day, and does not stop an open day from offering
+     the way back to the menu. */
+  function activeOrder(d) {
+    var o = d && d.myOrder;
+    return o && o.status !== "CANCELLED" ? o : null;
+  }
+
+  function cancelledOrder(d) {
+    var o = d && d.myOrder;
+    return o && o.status === "CANCELLED" ? o : null;
+  }
+
+  /* The day worth landing on: the first one still open, because that is the
+     only day anything can be done about; failing that the last day that has
+     an order, because that is the last thing that happened. */
+  function initial() {
+    var i;
+    for (i = 0; i < days.length; i++) if (days[i].open) return i;
+    for (i = days.length - 1; i >= 0; i--) if (activeOrder(days[i])) return i;
+    return 0;
+  }
+
+  var active = initial();
+
+  /* One source for the chip and for the word the live region reads out, so
+     the two can never describe the same day differently. The neutral grey
+     chip carries both open and closed: the word is what differs. */
+  function dayState(d) {
+    var o = activeOrder(d);
+    if (o) return STATUS[o.status] || { state: "open", label: "Stav neznámy" };
+    return { state: "open", label: d.open ? "Otvorené" : "Uzavreté" };
+  }
+
+  function dayChip(d) {
+    var s = dayState(d);
+    return S.chip(s.state, s.label);
+  }
+
+  function soldOut(m) {
+    return m.capacity > 0 && m.orderCount >= m.capacity;
+  }
+
+  /* myOrder carries the meal's name; the day's own meals carry everything
+     else. When both are in the response prefer the full record — the same
+     server, more of it — and fall back to the name alone for past days, which
+     arrive with meals: []. */
+  function orderedMeal(d, o) {
+    var full = (d.meals || []).filter(function (m) {
+      return m.mealOnDayId === o.mealOnDayId;
+    })[0];
+    if (full) return full;
+    return {
+      name: (o.meal && o.meal.name) || "Obed",
+      slot: o.slot,
+      category: o.meal && o.meal.category,
+      allergens: [],
+      capacity: 0,
+      orderCount: 0
+    };
+  }
+
+  /* S.allergenLabel is the one place that knows "veg" means vegetarian and a
+     bare number is an EU annex code; the tag markup is the design system's. */
+  function allergenTag(a) {
+    return '<span class="tag' + (a === "veg" ? " veg" : "") + '">' +
+      S.esc(S.allergenLabel(a)) + "</span>";
+  }
+
+  /* Never the raw enum: S.category turns it into Slovak, a tint and an icon,
+     and degrades to a neutral card if the server adds a category we have not
+     styled yet. A meal whose category did not come with it (an order from a
+     past day) simply does not claim one. */
+  function mealSub(m) {
+    var parts = [];
+    if (m.slot) parts.push("Obed " + m.slot);
+    if (m.category) parts.push(S.category(m.category).label);
+    return parts.join(" · ");
+  }
+
+  /* `state` is off for the meal the student has already ordered: their seat is
+     taken, so "Vypredané" beside their own lunch would read as bad news about
+     an order that is perfectly safe. */
+  function mealBlock(m, state) {
+    var c = S.category(m.category);
+    var out = state && soldOut(m);
+    var tags = (m.allergens || []).map(allergenTag).join("");
+
+    return '<div class="dmeal">' +
+      '<span class="disc ' + S.esc(c.tint) + '">' + S.icon(c.icon) + "</span>" +
+      "<div>" +
+        '<div class="dn">' + S.esc(m.name) + "</div>" +
+        '<div class="dsub">' + S.esc(mealSub(m)) +
+          (state && m.capacity > 0
+            ? " · obsadené " + S.esc(m.orderCount) + "/" + S.esc(m.capacity)
+            : "") + "</div>" +
+        (tags || out
+          ? '<div class="row tight wrap mt-s">' +
+              tags + (out ? S.chip("bad", "Vypredané") : "") + "</div>"
+          : "") +
+      "</div></div>";
+  }
+
+  /* The one action this page has, and it is a link. */
+  function menuLink(label, block) {
+    return '<a class="btn' + (block ? " block" : "") + '" href="index.html"' +
+      ' style="text-decoration:none">' + S.icon("restaurant_menu") +
+      S.esc(label) + "</a>";
+  }
+
+  /* ---------------------------------------------------------- the week list */
+
+  function rowText(d) {
+    var o = activeOrder(d);
+    if (o) {
+      var m = orderedMeal(d, o);
+      return { main: m.name, sub: mealSub(m) };
+    }
+
+    var c = cancelledOrder(d);
+    if (c) {
+      return {
+        main: "Objednávka zrušená",
+        sub: (c.meal && c.meal.name) ? c.meal.name : "Na tento deň nemáte obed"
+      };
+    }
+
+    var count = (d.meals || []).length;
+    if (!d.open) return { main: "Bez objednávky", sub: "Objednávanie je uzavreté" };
+    if (!count) return { main: "Bez objednávky", sub: "Menu zatiaľ nie je zverejnené" };
+    return { main: "Bez objednávky", sub: count + " " + S.plural(count) + " v ponuke" };
+  }
 
   function dayTile(d, i) {
     return '<button type="button" class="day" data-i="' + i + '"' +
       ' aria-pressed="' + (i === active) + '">' +
-      '<span class="dw">' + S.esc(d.w) + "</span>" +
-      '<span class="dd">' + S.esc(d.d) + "</span>" +
-      '<span class="dt' + (d.i !== null ? " done" : "") + '"></span></button>';
+      '<span class="dw">' + S.esc(d.weekday) + "</span>" +
+      '<span class="dd">' + S.esc(d.dateNumber) + "</span>" +
+      '<span class="dt' + (activeOrder(d) ? " done" : "") + '"></span></button>';
   }
 
-  /* .orow is styled for a div, so a button needs the four declarations that a
-     UA stylesheet would otherwise impose. Same inline style the React build
-     used. */
+  /* .orow is styled for a div, so a button needs the four declarations a UA
+     stylesheet would otherwise impose. */
   function weekRow(d, i) {
-    var m = mealOf(d);
+    var t = rowText(d);
     return '<button type="button" class="orow" data-i="' + i + '"' +
       ' aria-pressed="' + (i === active) + '"' +
       ' style="text-align:left;border:0;font-family:inherit;cursor:pointer">' +
-      '<span class="od"><span class="ow">' + S.esc(d.w) + "</span>" +
-        '<span class="on">' + S.esc(d.d) + "</span></span>" +
-      '<span class="oi"><span class="om">' +
-        S.esc(m ? m.n : "Zatiaľ bez objednávky") + "</span>" +
-        '<span class="os">' + S.esc(m ? m.cat : "Objednávka je otvorená") +
-        "</span></span>" +
-      S.chip(d.st, d.l) + "</button>";
+      '<span class="od"><span class="ow">' + S.esc(d.weekday) + "</span>" +
+        '<span class="on">' + S.esc(d.dateNumber) + "</span></span>" +
+      '<span class="oi"><span class="om">' + S.esc(t.main) + "</span>" +
+        '<span class="os">' + S.esc(t.sub) + "</span></span>" +
+      dayChip(d) + "</button>";
+  }
+
+  /* -------------------------------------------------------------- the panel */
+
+  /* What is left to say once the ordered meal has been shown. Nothing here is
+     an action on a closed day. */
+  function orderNote(d, o) {
+    /* Vydané is the end of the line whatever the day says, so this branch
+       does not repeat day.open's word for it. */
+    if (o.status === "SERVED") {
+      return '<p class="note">Obed bol vydaný.</p>';
+    }
+    if (!d.open) {
+      return '<p class="note">Objednávanie na tento deň je uzavreté. ' +
+        "Objednávku už nezmeníte.</p>";
+    }
+    return '<div class="mt-m">' + menuLink("Zmeniť v dnešnom menu", true) + "</div>" +
+      '<p class="note mt-s">Kým je deň otvorený, objednávku zmeníte alebo ' +
+      "zrušíte v dnešnom menu.</p>";
   }
 
   function panel(d) {
-    var m = mealOf(d);
+    var o = activeOrder(d);
+    var c = cancelledOrder(d);
+    var meals = d.meals || [];
+    var body;
 
-    return '<div class="' + (m ? "plain" : "plain dash") + '">' +
-      '<div class="ph"><span class="pd">' + S.esc(dayLabel(d)) + "</span>" +
-        S.chip(d.st, d.l) + "</div>" +
+    if (o) {
+      body = mealBlock(orderedMeal(d, o), false) +
+        '<div class="rule-line"></div>' + orderNote(d, o);
 
-      (m
-        ? '<div class="dmeal"><span class="disc ' + S.esc(m.tint) + '">' + S.icon(m.ic) + "</span>" +
-            '<div><div class="dn">' + S.esc(m.n) + "</div>" +
-            '<div class="dsub">' + S.esc(m.d) + "</div></div></div>" +
-          '<div class="row tight mt-m">' +
-            '<button class="btn soft grow">' + S.icon("swap_horiz") + "Zmeniť</button>" +
-            '<button class="btn soft grow">' + S.icon("close") + "Zrušiť</button></div>"
+    } else if (d.open) {
+      body =
+        (c ? '<p class="note mb-m">Objednávka na tento deň bola zrušená.</p>' : "") +
+        (meals.length
+          ? meals.map(function (m) { return mealBlock(m, true); })
+                 .join('<div class="rule-line"></div>')
+          : '<p class="pempty"><b>Menu ešte nie je zverejnené</b>' +
+            "Jedlá na tento deň sem pribudnú, len čo ich jedáleň doplní.</p>") +
+        '<div class="mt-m">' + menuLink("Otvoriť dnešné menu", true) + "</div>" +
+        '<p class="note mt-s">Obedy sa objednávajú v dnešnom menu.</p>';
 
-        : '<p class="pempty"><b>Objednávka je otvorená</b>' +
-            "Na tento deň si ešte môžete vybrať jedlo. Okno sa zatvára o 14:00 v deň obeda.</p>" +
-          '<div class="mt-m"><button class="btn block">' + S.icon("add") +
-            "Objednať obed</button></div>") +
+    } else {
+      /* Closed and nothing ordered: the calm end of the story. No button, no
+         link, nothing that suggests this day can still be changed. */
+      body = '<p class="pempty"><b>Objednávanie je uzavreté</b>' +
+        (c ? "Objednávku na tento deň ste zrušili. " : "") +
+        "Na tento deň si obed už neobjednáte.</p>";
+    }
 
-      "</div>";
+    return '<div class="' + (o ? "plain" : "plain dash") + '">' +
+      '<div class="ph"><span class="pd">' + S.esc(d.label) + "</span>" +
+        dayChip(d) + "</div>" +
+      body + "</div>";
   }
 
-  function render() {
-    var d = S.WEEK[active];
+  /* --------------------------------------------------------------- the page */
+
+  function head() {
+    var n = days.filter(activeOrder).length;
+    return S.pageHead("Tento týždeň",
+      n ? n + " " + S.pluralObed(n) + " tento týždeň" : "Zatiaľ bez objednávky");
+  }
+
+  function render(focusSel) {
+    if (!days.length) {
+      root.innerHTML = head() +
+        '<div class="empty">' + S.icon("calendar_month") +
+          "Rozpis na tento týždeň ešte nie je zverejnený.<br>" +
+          "Skúste to neskôr alebo sa pozrite na dnešné menu." +
+          '<div class="mt-m">' + menuLink("Otvoriť dnešné menu") + "</div>" +
+        "</div>";
+      return;
+    }
 
     root.innerHTML =
-      S.pageHead("Tento týždeň", "14. až 18. septembra", S.iconBtn("tune", "Filtre")) +
+      head() +
 
       '<div class="days" id="days" role="group" aria-label="Výber dňa">' +
-        S.WEEK.map(dayTile).join("") + "</div>" +
+        days.map(dayTile).join("") + "</div>" +
 
       '<div class="split main-aside mt-m">' +
         "<div>" +
           '<div class="gl">Rozpis týždňa</div>' +
-          '<div class="stack" id="week">' + S.WEEK.map(weekRow).join("") + "</div>" +
+          '<div class="stack" id="week">' + days.map(weekRow).join("") + "</div>" +
         "</div>" +
 
-        '<aside class="aside sticky">' + panel(d) + "</aside>" +
+        '<aside class="aside sticky">' + panel(days[active]) + "</aside>" +
       "</div>";
 
     bind();
+
+    /* innerHTML threw the old nodes away, so focus goes back where it was —
+       without this a click sends the keyboard to the top of the document. */
+    if (focusSel) {
+      var el = S.$(focusSel);
+      if (el) el.focus();
+    }
   }
 
-  /* innerHTML threw the old nodes away, so the listeners go back on — and so
-     does focus, otherwise a click sends the keyboard back to the top of the
-     document. */
   function bind() {
     S.$$("#days .day").concat(S.$$("#week .orow")).forEach(function (btn) {
       btn.addEventListener("click", function () {
         var i = Number(btn.getAttribute("data-i"));
         if (i === active) return;
         active = i;
-        var sel = "[data-i=\"" + i + "\"]";
         var where = btn.classList.contains("day") ? "#days .day" : "#week .orow";
-        render();
-        var back = S.$(where + sel);
-        if (back) back.focus();
+        render(where + '[data-i="' + i + '"]');
         speak();
       });
     });
   }
 
-  /* The detail panel sits off to the side, so say what landed in it. */
+  /* The panel sits off to the side, so say what landed in it. */
   function speak() {
-    var d = S.WEEK[active], m = mealOf(d);
-    S.announce(S.$("#live"), dayLabel(d) + ". " +
-      (m ? m.n + ", " + m.cat : "Zatiaľ bez objednávky") + ". " + d.l + ".");
+    var d = days[active];
+    var t = rowText(d);
+    S.announce(S.$("#live"),
+      d.label + ". " + t.main + (t.sub ? ", " + t.sub : "") + ". " + dayState(d).label + ".");
   }
 
   render();
-});
+};
+
+/* The week arrives before anything is drawn: boot holds the spinner until this
+   settles and shows its own retry if it does not. */
+page.load = function (S) {
+  return S.api.menuWeek().then(function (data) { S.__week = data; });
+};
+
+SKYRO.page(page);
