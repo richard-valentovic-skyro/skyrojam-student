@@ -682,39 +682,76 @@ window.SKYRO = window.SKYRO || {};
     "Server zatiaľ nepodporuje zakladanie účtov, takže žiak nebol vytvorený. " +
     "Nové kontá zakladá správca školského systému.";
 
+  /* The server's own alphabet for claim codes: no I, L, O, 0 or 1, because
+     this gets read off a slip of paper and typed by an eleven-year-old. */
+  var CLAIM_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+  function mockClaimCode() {
+    var out = "";
+    for (var i = 0; i < 8; i++) {
+      out += CLAIM_ALPHABET.charAt(Math.floor(Math.random() * CLAIM_ALPHABET.length));
+    }
+    return out;
+  }
+
+  /* POST /students { name, username, classCode?, password? } -> 201 with the
+     created row.
+
+     THE PASSWORD IS OPTIONAL, AND LEAVING IT OUT IS THE POINT. Send one and
+     the pupil can sign in with it immediately. Omit it and the server creates
+     the account with no password and issues a single-use `claimCode`, valid
+     seven days, which comes back on the response for the manager to hand over.
+     That pupil then meets the set-your-own-password step at first sign-in.
+
+     An empty string is NOT a password: it is stripped here, because the server
+     reads `password` as present and would hash "" instead of issuing a code.
+
+     The server owns the username's uniqueness and answers 409 when it is
+     taken. */
   function createStudent(data) {
+    var pass = String(data.password || "");
+
     if (MOCK) {
       var u = String(data.username || "").trim().toLowerCase();
       if (!data.name || !u) return fail("VALIDATION", 400);
-      /* The server requires a password of at least four characters. */
-      if (String(data.password || "").length < 4) {
+      if (pass && pass.length < 4) {
         return Promise.reject(new ApiError(400, "VALIDATION",
-          "Heslo musí mať aspoň 4 znaky"));
+          "Heslo mus\u00ed ma\u0165 aspo\u0148 4 znaky"));
       }
       if (S.STUDENTS.some(function (s) { return s.username === u; })) {
         return Promise.reject(new ApiError(409, "VALIDATION",
-          "Používateľské meno " + u + " je už obsadené."));
+          "Pou\u017e\u00edvate\u013esk\u00e9 meno " + u + " je u\u017e obsaden\u00e9."));
       }
+      var code = pass ? null : mockClaimCode();
       var fresh = {
         id: "acc_" + u.replace(/[^a-z0-9]/g, ""),
         name: String(data.name).trim(),
         username: u,
         classCode: data.classCode ? String(data.classCode).trim() : null,
         active: true,
-        balanceCents: 0
+        balanceCents: 0,
+        claimCode: code,
+        claimCodeExpires: code
+          ? new Date(Date.now() + 7 * 86400000).toISOString()
+          : null
       };
-      S.STUDENTS.unshift(fresh);
+      /* The roster row carries what mock /auth/status and /auth/claim read, so
+         an account made here can actually be claimed in mock mode. */
+      S.STUDENTS.unshift({
+        id: fresh.id, name: fresh.name, username: fresh.username,
+        classCode: fresh.classCode, active: true, balanceCents: 0,
+        needsPassword: !pass, claimCode: code
+      });
       return mock(fresh);
     }
-      /* POST /students { name, username, classCode?, password } -> 201 with the
-         created row. The server requires the password (min 4 chars) and owns
-         the username's uniqueness, answering 409 when it is taken. */
-      return request("POST", "/students", {
-        name: data.name,
-        username: data.username,
-        classCode: data.classCode || null,
-        password: data.password
-      });
+
+    var body = {
+      name: data.name,
+      username: data.username,
+      classCode: data.classCode || null
+    };
+    if (pass) body.password = pass;
+    return request("POST", "/students", body);
   }
 
   S.api = {
