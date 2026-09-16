@@ -186,12 +186,17 @@ window.SKYRO = window.SKYRO || {};
      which is what makes every open/closed flag and every "dnes / včera"
      below consistent with each other:
 
-       ordering for day D runs (D−1) 08:00 → (D−1) 14:00,
-       so right now exactly one day is open: Wednesday the 16th.
+       a day is orderable from the moment its menu is published until
+       08:00 that morning, school time (Europe/Bratislava),
 
-     That is the day /menu/today stands for here, because it is the day a
-     student can actually act on. Tuesday's lunches are already being served
-     — that is the sheet the manager sees.
+     so right now Tuesday has closed (08:00 passed two and a half hours ago)
+     and Wednesday and Thursday are both open. Friday is a holiday.
+
+     /menu/today stands for the CALENDAR day — Tuesday — exactly as the server
+     returns it; it does not skip ahead to the next open day. So the home
+     screen here shows today's lunch, already ordered and past its deadline,
+     and the week screen is where a day still open gets ordered. Tuesday's
+     lunches are being served right now — that is the sheet the manager sees.
      ================================================================= */
 
   const MOCK_NOW = "2026-09-15T09:30:00.000Z";
@@ -263,27 +268,29 @@ window.SKYRO = window.SKYRO || {};
     };
   }
 
-  /* GET /menu/today
-     Wednesday is the day whose ordering window is open right now, so it is the
-     day this screen can act on. Slot 9 is sold out (8 of 8) and slot 2 nearly
-     so — the two states the card has to survive. */
+  /* GET /menu/today — the calendar day, which is Tuesday, closed since 08:00.
+     This is the "you already have a lunch today" state: the card shows what is
+     coming and offers no change, because the deadline has passed. The day a
+     student can still act on is Wednesday, and it is reached from the week
+     screen. */
   const TODAY_MENU = {
     day: {
-      key: "2026-09-16",
-      label: "Streda 16. septembra 2026",
+      key: "2026-09-15",
+      label: "Utorok 15. septembra 2026",
       isServing: true,
-      open: true,
-      deadline: "2026-09-15T14:00:00.000Z"
+      open: false,
+      deadline: "2026-09-15T06:00:00.000Z"
     },
     balanceCents: 4750,
-    meals: dayMeals("2026-09-16", [1, 36, 1, 4, 0, 2, 0, 0, 8], true),
-    myOrder: null
+    meals: dayMeals("2026-09-15", [8, 11, 14, 2, 6, 3, 1, 2, 5], true),
+    myOrder: { id: "ord_5", mealOnDayId: "mod_2026-09-15_3", slot: 3, meal: orderedMeal(3), status: "ORDERED" }
   };
 
   /* GET /menu/week — Monday 14 to Friday 18 September 2026.
-     Mon/Tue closed (their windows have passed), Wed open, Thu not open yet
-     (its window starts Wednesday 08:00), Fri a holiday: the canteen is not
-     cooking, which is not the same as a missed deadline. */
+     Mon and Tue closed (their 08:00 deadlines have passed), Wed and Thu both
+     open — under the current rule every published day ahead is orderable at
+     once, not just tomorrow — and Fri a holiday: the canteen is not cooking,
+     which is not the same as a missed deadline. */
   const WEEK_MENU = {
     monday: "2026-09-14",
     days: [
@@ -292,31 +299,31 @@ window.SKYRO = window.SKYRO || {};
         label: "Pondelok 14. septembra 2026",
         isServing: true,
         open: false,
-        deadline: "2026-09-13T14:00:00.000Z",
+        deadline: "2026-09-14T06:00:00.000Z",
         weekday: "Po",
         dateNumber: 14,
         shortLabel: "14. septembra 2026",
         meals: dayMeals("2026-09-14", [12, 9, 7, 3, 5, 2, 1, 4, 6], false),
-        myOrder: { mealOnDayId: "mod_2026-09-14_1", slot: 1, meal: orderedMeal(1), status: "SERVED" }
+        myOrder: { id: "ord_4", mealOnDayId: "mod_2026-09-14_1", slot: 1, meal: orderedMeal(1), status: "SERVED" }
       },
       {
         key: "2026-09-15",
         label: "Utorok 15. septembra 2026",
         isServing: true,
         open: false,
-        deadline: "2026-09-14T14:00:00.000Z",
+        deadline: "2026-09-15T06:00:00.000Z",
         weekday: "Ut",
         dateNumber: 15,
         shortLabel: "15. septembra 2026",
         meals: dayMeals("2026-09-15", [8, 11, 14, 2, 6, 3, 1, 2, 5], false),
-        myOrder: { mealOnDayId: "mod_2026-09-15_3", slot: 3, meal: orderedMeal(3), status: "ORDERED" }
+        myOrder: { id: "ord_5", mealOnDayId: "mod_2026-09-15_3", slot: 3, meal: orderedMeal(3), status: "ORDERED" }
       },
       {
         key: "2026-09-16",
         label: "Streda 16. septembra 2026",
         isServing: true,
         open: true,
-        deadline: "2026-09-15T14:00:00.000Z",
+        deadline: "2026-09-16T06:00:00.000Z",
         weekday: "St",
         dateNumber: 16,
         shortLabel: "16. septembra 2026",
@@ -327,8 +334,8 @@ window.SKYRO = window.SKYRO || {};
         key: "2026-09-17",
         label: "Štvrtok 17. septembra 2026",
         isServing: true,
-        open: false,
-        deadline: "2026-09-16T14:00:00.000Z",
+        open: true,
+        deadline: "2026-09-17T06:00:00.000Z",
         weekday: "Št",
         dateNumber: 17,
         shortLabel: "17. septembra 2026",
@@ -340,7 +347,7 @@ window.SKYRO = window.SKYRO || {};
         label: "Piatok 18. septembra 2026",
         isServing: false,
         open: false,
-        deadline: "2026-09-17T14:00:00.000Z",
+        deadline: "2026-09-18T06:00:00.000Z",
         weekday: "Pi",
         dateNumber: 18,
         shortLabel: "18. septembra 2026",
@@ -366,10 +373,10 @@ window.SKYRO = window.SKYRO || {};
      `meta` is the server's own wording (smartTimeLabels), already relative to
      the stopped clock above; `createdAt` is the ISO the label came from. */
   const ANNOUNCEMENTS = [
-    { id: "a1", title: "Objednávky sa uzatvárajú deň vopred o 14:00", body: "Na obed v konkrétny deň sa objednáva deň vopred, od 8:00 do 14:00. Platí pre všetky ročníky.", important: true, author: "Katarína Vrábľová", createdAt: "2026-09-15T09:12:00.000Z", meta: "dnes 09:12" },
-    { id: "a2", title: "Tri nové vegetariánske jedlá od októbra", body: "Do ponuky pribudnú tri bezmäsité jedlá. Hlasovanie o štvrtom nájdete v školskom Classroome do piatka.", important: false, author: "Katarína Vrábľová", createdAt: "2026-09-14T08:05:00.000Z", meta: "včera 08:05" },
-    { id: "a3", title: "Výdaj obedov počas testovania", body: "V utorok 15. septembra sa vydáva až od 12:20 kvôli celoškolskému testovaniu v telocvični.", important: false, author: "Katarína Vrábľová", createdAt: "2026-09-11T13:05:00.000Z", meta: "11. septembra 2026 13:05" },
-    { id: "a4", title: "Jesenné prázdniny bez výdaja", body: "Od 28. do 31. októbra sa obedy nevydávajú. Objednávky na tieto dni sa zrušia automaticky.", important: false, author: "Katarína Vrábľová", createdAt: "2026-09-08T10:22:00.000Z", meta: "8. septembra 2026 10:22" }
+    { id: "a1", title: "Objednávky sa uzatvárajú o 8:00 v deň obeda", body: "Obed si môžete objednať hneď ako je menu zverejnené, až do 8:00 ráno v deň, na ktorý obed je. Po 8:00 sa objednávky na ten deň zatvárajú. Platí pre všetky ročníky.", important: true, author: "Admin", createdAt: "2026-09-15T09:12:00.000Z", meta: "dnes 09:12" },
+    { id: "a2", title: "Tri nové vegetariánske jedlá od októbra", body: "Do ponuky pribudnú tri bezmäsité jedlá. Hlasovanie o štvrtom nájdete v školskom Classroome do piatka.", important: false, author: "Admin", createdAt: "2026-09-14T08:05:00.000Z", meta: "včera 08:05" },
+    { id: "a3", title: "Výdaj obedov počas testovania", body: "V utorok 15. septembra sa vydáva až od 12:20 kvôli celoškolskému testovaniu v telocvični.", important: false, author: "Admin", createdAt: "2026-09-11T13:05:00.000Z", meta: "11. septembra 2026 13:05" },
+    { id: "a4", title: "Jesenné prázdniny bez výdaja", body: "Od 28. do 31. októbra sa obedy nevydávajú. Objednávky na tieto dni sa zrušia automaticky.", important: false, author: "Admin", createdAt: "2026-09-08T10:22:00.000Z", meta: "8. septembra 2026 10:22" }
   ];
 
   /* GET /students (manager) — the `students` array, name ascending as the
@@ -377,7 +384,14 @@ window.SKYRO = window.SKYRO || {};
      that names a student. */
   const STUDENTS = [
     { id: "s4", name: "Adam Šimko",       username: "adam.simko",       classCode: "2.B", active: true,  balanceCents: 200 },
-    { id: "s6", name: "Lenka Michalcová", username: "lenka.michalcova", classCode: "1.A", active: true,  balanceCents: 0 },
+    /* Never signed in: no password yet, and a claim code the manager reads
+       out to her. Mock mode's one example of the first-login flow — sign in
+       as "lenka.michalcova" to see the set-password step instead of the
+       password field. The real backend keeps the code hashed and never
+       ships it to a browser; it is inline here because nothing in this
+       file is real. */
+    { id: "s6", name: "Lenka Michalcová", username: "lenka.michalcova", classCode: "1.A", active: true,  balanceCents: 0,
+      needsPassword: true, claimCode: "obed2026" },
     { id: "s1", name: "Matej Hrušovský",  username: "matej.hrusovsky",  classCode: "3.A", active: true,  balanceCents: 4750 },
     { id: "s2", name: "Nina Bartošová",   username: "nina.bartosova",   classCode: "3.A", active: true,  balanceCents: 11200 },
     { id: "s7", name: "Peter Kollár",     username: "peter.kollar",     classCode: "4.A", active: true,  balanceCents: 3300 },
@@ -393,7 +407,7 @@ window.SKYRO = window.SKYRO || {};
      NO PASSWORD APPEARS IN THIS FILE and none ever should — anyone can read
      it. Mock mode accepts any password and says so on screen. */
   const MANAGERS = [
-    { id: "m1", name: "Katarína Vrábľová", username: "prengac", role: "MANAGER", classCode: null }
+    { id: "m1", name: "Admin", username: "prengac", role: "MANAGER", classCode: null }
   ];
 
   /* GET /orders?date= (manager) — the `orders` array for the day being served.

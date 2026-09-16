@@ -326,6 +326,66 @@
 /* a field with no button inside it */
 .afield.solo { padding: 11px 18px; }
 
+/* Step two names the account it is about. The field the username was typed
+   into is gone by then, and on a shared school computer a bare password box
+   that named nobody is a small cruelty — and an easy way to type your password
+   into somebody else's sign-in. */
+.awho {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.awho .wu {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.awho .wc {
+  flex: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--violet);
+}
+
+.awho .wc:hover { text-decoration: underline; }
+
+/* First sign-in: what the code is and who it comes from. Violet rather than
+   rose — this is an instruction, not a refusal. */
+.ahint {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 0 14px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  background: var(--violet-50);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.55;
+  color: var(--ink-2);
+  text-align: left;
+}
+
+.ahint .ms {
+  flex: none;
+  font-size: 18px;
+  color: var(--violet);
+}
+
 /* show / hide the password */
 .apeek {
   width: 34px;

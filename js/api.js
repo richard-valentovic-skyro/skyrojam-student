@@ -6,9 +6,11 @@
 
    Written against the real backend (Bun + Elysia + Prisma), endpoint by
    endpoint. Money is integer cents throughout. Ordering is by mealOnDayId.
-   The server owns the ordering window — for day D it runs (D−1) 08:00 to
-   (D−1) 14:00 — and answers with day.open and an ISO day.deadline, so there is
-   no deadline logic in this file or anywhere else on the client.
+   The server owns the ordering window — a day is orderable from the moment its
+   menu is published until 08:00 that morning, school time — and answers with
+   day.open and an ISO day.deadline, so there is no deadline logic in this file
+   or anywhere else on the client. If the school moves that hour, nothing here
+   changes.
 
    With CONFIG.API_BASE empty this runs in MOCK MODE against the fixtures in
    data.js, so the app works with no server at all. The fixtures are the same
@@ -253,6 +255,72 @@ window.SKYRO = window.SKYRO || {};
   function signOut() {
     signOutLocal();
     return Promise.resolve(null);
+  }
+
+  /* GET /auth/status?username= -> { needsPassword: boolean }
+
+     Answers one question: does this person still have to set a password?
+     The login screen asks it after the username is entered so it can show the
+     right second step, which is the whole reason the password box is not on
+     screen from the start.
+
+     THE FAILURE DIRECTION MATTERS. A backend without this route, a proxy that
+     eats it, a network blip — all resolve to needsPassword:false, which shows
+     the ordinary password field. That is exactly how the screen behaved before
+     this existed, so a missing route degrades to the old login rather than
+     stranding someone on a set-password step they cannot complete. Only
+     needsPassword:true, said out loud by the server, opens the claim step.
+
+     The server must answer false for a username that does not exist, or this
+     route becomes a way to discover who has an account. The frontend cannot
+     enforce that; BACKEND-PATCH.md item A1 spells it out. */
+  function authStatus(username) {
+    var u = String(username || "").trim().toLowerCase();
+    if (MOCK) {
+      var all = (S.STUDENTS || []).concat(S.MANAGERS || []);
+      var who = all.filter(function (a) { return a.username === u; })[0];
+      return mock({ needsPassword: !!(who && who.needsPassword) });
+    }
+    return request("GET", "/auth/status?username=" + encodeURIComponent(u)).then(
+      function (res) { return { needsPassword: !!(res && res.needsPassword) }; },
+      function (err) {
+        var s = err && err.status;
+        if (s === 404 || s === 405 || s === 501) return { needsPassword: false };
+        throw err;
+      }
+    );
+  }
+
+  /* POST /auth/claim { username, claimCode, password } -> { token, account }
+
+     Sets the first password on an account that has none, and signs in. Same
+     response shape as /auth/login, so the caller treats both identically.
+
+     THE CLAIM CODE IS THE SECRET. Usernames here are derived from names and
+     are therefore guessable, so a claim that asked only for a username would
+     let anyone take over any unclaimed account — a pupil's, or a manager's.
+     The code is handed over in person by the canteen manager. See
+     BACKEND-PATCH.md item A2. */
+  function claim(username, claimCode, password) {
+    if (MOCK) {
+      var u = String(username).trim().toLowerCase();
+      var all = (S.STUDENTS || []).concat(S.MANAGERS || []);
+      var who = all.filter(function (a) { return a.username === u; })[0];
+      if (!who || !who.needsPassword) return fail("ALREADY_SET", 409);
+      if (String(claimCode).trim() !== String(who.claimCode || "")) {
+        return fail("BAD_CREDENTIALS", 401);
+      }
+      who.needsPassword = false; // claimed; the next sign-in takes the password
+      return login(u, password);
+    }
+    return request("POST", "/auth/claim", {
+      username: String(username).trim().toLowerCase(),
+      claimCode: String(claimCode).trim(),
+      password: password
+    }).then(function (res) {
+      if (res && res.token) setToken(res.token);
+      return res;
+    });
   }
 
   /* -------------------------------------------------------------- student */
@@ -618,6 +686,11 @@ window.SKYRO = window.SKYRO || {};
     if (MOCK) {
       var u = String(data.username || "").trim().toLowerCase();
       if (!data.name || !u) return fail("VALIDATION", 400);
+      /* The server requires a password of at least four characters. */
+      if (String(data.password || "").length < 4) {
+        return Promise.reject(new ApiError(400, "VALIDATION",
+          "Heslo musí mať aspoň 4 znaky"));
+      }
       if (S.STUDENTS.some(function (s) { return s.username === u; })) {
         return Promise.reject(new ApiError(409, "VALIDATION",
           "Používateľské meno " + u + " je už obsadené."));
@@ -633,15 +706,15 @@ window.SKYRO = window.SKYRO || {};
       S.STUDENTS.unshift(fresh);
       return mock(fresh);
     }
-    /* No such route on this backend — see html/API-GAPS.md (§1). */
-    return whenMissing(
-      request("POST", "/students", {
+      /* POST /students { name, username, classCode?, password } -> 201 with the
+         created row. The server requires the password (min 4 chars) and owns
+         the username's uniqueness, answering 409 when it is taken. */
+      return request("POST", "/students", {
         name: data.name,
         username: data.username,
-        classCode: data.classCode || null
-      }),
-      STUDENT_NOT_IMPLEMENTED
-    );
+        classCode: data.classCode || null,
+        password: data.password
+      });
   }
 
   S.api = {
@@ -655,6 +728,8 @@ window.SKYRO = window.SKYRO || {};
 
     login: login,
     signOut: signOut,
+    authStatus: authStatus,
+    claim: claim,
 
     me: me,
     menuToday: menuToday,
