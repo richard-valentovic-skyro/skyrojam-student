@@ -61,11 +61,46 @@ window.SKYRO = window.SKYRO || {};
   /* The slot, drawn empty and hidden. "28,00 €" on its own is unlabelled to
      a screen reader — in a canteen app it could as easily be a price — so
      the reading is spelled out beside it. */
+  /* The balance is a control, not a label: tapping it is the obvious gesture
+     for "how much do I have and how do I get more", and a student who cannot
+     find that out will ask the canteen the same question in person.
+
+     It does NOT top up. Only a manager can move money — the API has one
+     top-up route and it is manager-only — so the panel says who to ask
+     rather than offering a button that could not work. */
   function balanceHtml() {
-    return '<span class="bal money" id="bal" hidden>' +
+    return '<button class="bal money" id="bal" type="button" hidden' +
+      ' aria-expanded="false" aria-controls="balpanel">' +
       S.icon("account_balance_wallet") +
       '<span class="sr-only">Zostatok na účte: </span>' +
-      '<span class="balv"></span></span>';
+      '<span class="balv"></span></button>' +
+      '<div class="balpanel" id="balpanel" role="dialog" aria-modal="false"' +
+      ' aria-labelledby="balpanel-h" hidden></div>';
+  }
+
+  /* Rebuilt on every open so it always shows the balance currently on screen
+     rather than one captured when the page loaded. */
+  function balancePanelHtml(cents) {
+    var left = S.lunchesLeft(cents);
+    var price = S.eur(S.LUNCH_PRICE_CENTS);
+    var short = cents < S.LUNCH_PRICE_CENTS;
+
+    return '<div class="balhead">' +
+        '<span class="pd" id="balpanel-h">Zostatok na účte</span>' +
+        '<button class="sq" type="button" id="balclose" aria-label="Zavrieť">' +
+          S.icon("close") + "</button>" +
+      "</div>" +
+      '<p class="balbig" style="color:' +
+        (short ? "var(--c-rose)" : "var(--ink)") + '">' + S.esc(S.eur(cents)) + "</p>" +
+      '<p class="balsub">' +
+        (short
+          ? "Nestačí ani na jeden obed (" + S.esc(price) + ")."
+          : "Vystačí na " + left + " " + S.pluralObed(left) + " po " + S.esc(price) + ".") +
+      "</p>" +
+      '<div class="rule-line"></div>' +
+      '<p class="note" style="padding:0">Kredit dobíja <b>vedúca jedálne</b>. ' +
+        "Peniaze jej odovzdajte v jedálni a pripíše ich na váš účet — v aplikácii " +
+        "sa dobiť nedá.</p>";
   }
 
   /* Name and trieda, out of the session. The class is a second span inside
@@ -134,6 +169,62 @@ window.SKYRO = window.SKYRO || {};
      empty slot says "we do not know", which is true; the number from before
      the order says the account holds 5,50 € more than it does, which is not.
      A later successful read fills it back in. */
+  function balanceCentsOnScreen() {
+    var out = S.$(".balv");
+    var txt = out ? out.textContent : "";
+    /* Read back what is displayed rather than keeping a second copy that
+       could disagree with it — rule 1: one balance, not two. */
+    var m = /-?[\d\s ]+,\d\d/.exec(String(txt));
+    if (!m) return null;
+    var n = Number(m[0].replace(/[\s ]/g, "").replace(",", "."));
+    return isFinite(n) ? Math.round(n * 100) : null;
+  }
+
+  function closeBalance() {
+    var btn = S.$("#bal"), panel = S.$("#balpanel");
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    if (btn) { btn.setAttribute("aria-expanded", "false"); btn.focus(); }
+    document.removeEventListener("keydown", onBalanceKey);
+    document.removeEventListener("click", onBalanceOutside, true);
+  }
+
+  function onBalanceKey(e) {
+    if (e.key === "Escape" || e.key === "Esc") { e.preventDefault(); closeBalance(); }
+  }
+
+  function onBalanceOutside(e) {
+    var panel = S.$("#balpanel"), btn = S.$("#bal");
+    if (!panel || panel.hidden) return;
+    if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+    closeBalance();
+  }
+
+  function openBalance() {
+    var btn = S.$("#bal"), panel = S.$("#balpanel");
+    if (!btn || !panel) return;
+    var cents = balanceCentsOnScreen();
+    if (cents === null) return;          // nothing known, nothing to explain
+
+    panel.innerHTML = balancePanelHtml(cents);
+    panel.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+
+    var close = S.$("#balclose");
+    if (close) { close.addEventListener("click", closeBalance); close.focus(); }
+    document.addEventListener("keydown", onBalanceKey);
+    document.addEventListener("click", onBalanceOutside, true);
+  }
+
+  function bindBalance() {
+    var btn = S.$("#bal");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      if (S.$("#balpanel") && !S.$("#balpanel").hidden) closeBalance();
+      else openBalance();
+    });
+  }
+
   function clearBalance() {
     var slot = S.$("#bal");
     if (!slot) return;
@@ -188,6 +279,8 @@ window.SKYRO = window.SKYRO || {};
     /* After the chrome exists, and never before the page: this is the only
        read the shell makes, and the page is already rendering around it. */
     fillBalance();
+
+    bindBalance();
 
     return S.$("#obsah");
   }

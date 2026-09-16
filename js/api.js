@@ -21,6 +21,9 @@ window.SKYRO = window.SKYRO || {};
   var BASE = (CONFIG.API_BASE || "").replace(/\/+$/, "");
   var MOCK = !BASE;
 
+  /* Mock mode only: who the last successful sign-in was for. */
+  var mockMe = null;
+
   /* ---------------------------------------------------------------- auth */
 
   var TOKEN_KEY = "skyro.token";
@@ -210,6 +213,10 @@ window.SKYRO = window.SKYRO || {};
       var u = String(username).trim().toLowerCase();
       var manager = S.MANAGERS.filter(function (m) { return m.username === u; })[0];
       if (manager) {
+        mockMe = {
+          id: manager.id, name: manager.name, username: manager.username,
+          role: "MANAGER", classCode: null, active: true, balanceCents: 0
+        };
         return mock({
           token: "mock-manager",
           account: {
@@ -222,13 +229,19 @@ window.SKYRO = window.SKYRO || {};
       var student = S.STUDENTS.filter(function (s) { return s.username === u; })[0];
       if (!student) return fail("BAD_CREDENTIALS", 401);
       if (!student.active) return fail("INACTIVE", 403);
-      return mock({
-        token: "mock-student",
-        account: {
-          id: student.id, name: student.name, username: student.username,
-          role: "STUDENT", classCode: student.classCode || null
-        }
-      });
+      /* Remember WHO signed in. Without this, mock /me answered with the same
+         fixture whoever logged in, so signing in as a student with no credit
+         still showed the demo student's balance — a lie in the one place the
+         number has to be trusted. */
+      mockMe = {
+        id: student.id, name: student.name, username: student.username,
+        role: "STUDENT", classCode: student.classCode || null,
+        active: student.active, balanceCents: student.balanceCents
+      };
+      return mock({ token: "mock-student", account: {
+        id: student.id, name: student.name, username: student.username,
+        role: "STUDENT", classCode: student.classCode || null
+      } });
     }
     return request("POST", "/auth/login", { username: username, password: password })
       .then(function (res) {
@@ -245,15 +258,39 @@ window.SKYRO = window.SKYRO || {};
   /* -------------------------------------------------------------- student */
 
   /* GET /me -> { id, name, username, role, classCode, active, balanceCents } */
+  /* Mock mode: the signed-in account as the roster currently has it.
+
+     WHO is read from the session, not from a variable set at sign-in — signing
+     in navigates to a new page, so every module here is re-evaluated and any
+     variable is back to null. The session survives because it is in
+     sessionStorage; there is no server to ask. */
+  function mockAccount() {
+    var who = (S.session && S.session.get && S.session.get()) || mockMe || S.ME;
+    var row = S.STUDENTS.filter(function (s) { return s.id === who.id; })[0];
+    return row
+      ? { id: row.id, name: row.name, username: row.username, role: "STUDENT",
+          classCode: row.classCode || null, active: row.active,
+          balanceCents: row.balanceCents }
+      : who;
+  }
+
   function me() {
-    if (MOCK) return mock(S.ME);
+    if (MOCK) {
+      return mock(mockAccount());
+    }
     return request("GET", "/me");
   }
 
   /* GET /menu/today -> { day, balanceCents, meals, myOrder }
      The balance comes with it, so the home screen needs no second call. */
   function menuToday(date) {
-    if (MOCK) return mock(S.TODAY_MENU);
+    if (MOCK) {
+      /* The same number /me would give. Two sources of one balance can
+         disagree; one cannot. */
+      var day = JSON.parse(JSON.stringify(S.TODAY_MENU));
+      day.balanceCents = mockAccount().balanceCents;
+      return mock(day);
+    }
     return request("GET", "/menu/today" + (date ? "?date=" + encodeURIComponent(date) : ""));
   }
 

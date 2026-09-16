@@ -1,21 +1,13 @@
-/* Deployment configuration. This is the only file that differs between
-   environments — everything else is identical in every deploy.
+/* Deployment configuration. The only file that differs between environments.
 
    API_BASE empty  -> MOCK MODE: the app runs entirely on the fixtures in
-                      data.js. No server needed. This is the current state.
-   API_BASE set    -> every read and write goes to that origin instead.
-                      Nothing else has to change.
+                      data.js, with no server. Useful for design work and for
+                      opening the pages straight from disk.
+   API_BASE set    -> every read and write goes to that origin. Nothing else
+                      in the app changes.
 
-   Example for production:
-     API_BASE: "https://api.skyro.ai/v1"
-*/
+   api.prengo.sbs is a Cloudflare tunnel to the Bun/Elysia backend. */
 window.SKYRO = window.SKYRO || {};
 window.SKYRO.CONFIG = {
-  API_BASE: "",
-
-  /* Ordering for a given day closes at this hour, school local time.
-     Every screen that names the deadline derives its wording from this —
-     change it here and the countdown, the notes, the week view and the
-     admin copy all follow. The window opens at midnight the same day. */
-  ORDER_DEADLINE_HOUR: 8
+  API_BASE: "https://api.prengo.sbs"
 };

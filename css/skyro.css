@@ -232,6 +232,7 @@ body {
 /* ---------- topbar: floats over the scrolling body, so it gets glass ------- */
 .topbar {
   position: sticky;
+  /* the balance panel hangs off this */
   top: 0;
   z-index: 20;
   display: flex;
