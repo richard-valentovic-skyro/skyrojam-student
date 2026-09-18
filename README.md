@@ -29,7 +29,7 @@ unmatched paths, and `_headers` sets the security and caching rules.
 
 | File | Screen |
 |---|---|
-| `index.html` | Today's menu — pick a lunch, see the price and your balance, confirm before 08:00 that morning |
+| `index.html` | Today's menu — pick a lunch, see the price and your balance, confirm while the day is still open |
 | `tyzden.html` | The week — a tile per day, detail panel for the selected one |
 | `objednavky.html` | Order history, grouped by week |
 | `kredit.html` | Balance, what it covers, and every movement on the account |

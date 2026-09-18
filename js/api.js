@@ -6,11 +6,15 @@
 
    Written against the real backend (Bun + Elysia + Prisma), endpoint by
    endpoint. Money is integer cents throughout. Ordering is by mealOnDayId.
-   The server owns the ordering window — a day is orderable from the moment its
-   menu is published until 08:00 that morning, school time — and answers with
-   day.open and an ISO day.deadline, so there is no deadline logic in this file
-   or anywhere else on the client. If the school moves that hour, nothing here
-   changes.
+   The server owns the ordering window and answers with day.open. There is no
+   deadline logic in this file or anywhere else on the client — no clock, no
+   constant, no hour written down. The rule has already changed three times
+   (the day before at 14:00, then 08:00 on the day, then midnight, now 24/7
+   with no cut-off at all) and not one of those changes touched a line of
+   frontend code. It is deliberate that naming the rule here is impossible.
+
+   day.deadline still arrives and is still rendered where the design asks for
+   it, but it decides nothing: `open` is the only fact any screen acts on.
 
    With CONFIG.API_BASE empty this runs in MOCK MODE against the fixtures in
    data.js, so the app works with no server at all. The fixtures are the same

@@ -186,17 +186,22 @@ window.SKYRO = window.SKYRO || {};
      which is what makes every open/closed flag and every "dnes / včera"
      below consistent with each other:
 
-       a day is orderable from the moment its menu is published until
-       08:00 that morning, school time (Europe/Bratislava),
+       ordering is 24/7 — there is no deadline of any kind,
 
-     so right now Tuesday has closed (08:00 passed two and a half hours ago)
-     and Wednesday and Thursday are both open. Friday is a holiday.
+     so every day the canteen is cooking is open: Monday included, though it
+     has already been served, and Tuesday, Wednesday and Thursday. Friday is
+     a holiday and is the only closed day here.
+
+     THE RULE IS THE SERVER'S AND IS NOT WRITTEN DOWN HERE. It has already
+     moved three times (14:00 the day before, then 08:00 on the day, then
+     midnight, now none at all) and every time it moved, prose in this file
+     that named an hour became a lie. `deadline` below is still sent by the
+     server and is still rendered, but nothing gates on it — `open` is the
+     only fact that decides anything, here or in the apps.
 
      /menu/today stands for the CALENDAR day — Tuesday — exactly as the server
-     returns it; it does not skip ahead to the next open day. So the home
-     screen here shows today's lunch, already ordered and past its deadline,
-     and the week screen is where a day still open gets ordered. Tuesday's
-     lunches are being served right now — that is the sheet the manager sees.
+     returns it; it does not skip ahead to the next open day. Tuesday's lunches
+     are being served right now — that is the sheet the manager sees.
      ================================================================= */
 
   const MOCK_NOW = "2026-09-15T09:30:00.000Z";
@@ -268,18 +273,17 @@ window.SKYRO = window.SKYRO || {};
     };
   }
 
-  /* GET /menu/today — the calendar day, which is Tuesday, closed since 08:00.
-     This is the "you already have a lunch today" state: the card shows what is
-     coming and offers no change, because the deadline has passed. The day a
-     student can still act on is Wednesday, and it is reached from the week
-     screen. */
+  /* GET /menu/today — the calendar day, which is Tuesday, and open like every
+     serving day now is. This is the "you already have a lunch today, and you
+     can still change it" state: an order is on the card and nothing has closed
+     it, which is the case the morning cut-off used to make unreachable. */
   const TODAY_MENU = {
     day: {
       key: "2026-09-15",
       label: "Utorok 15. septembra 2026",
       isServing: true,
-      open: false,
-      deadline: "2026-09-15T06:00:00.000Z"
+      open: true,
+      deadline: "2026-09-15T22:00:00.000Z"
     },
     balanceCents: 4750,
     meals: dayMeals("2026-09-15", [8, 11, 14, 2, 6, 3, 1, 2, 5], true),
@@ -287,10 +291,10 @@ window.SKYRO = window.SKYRO || {};
   };
 
   /* GET /menu/week — Monday 14 to Friday 18 September 2026.
-     Mon and Tue closed (their 08:00 deadlines have passed), Wed and Thu both
-     open — under the current rule every published day ahead is orderable at
-     once, not just tomorrow — and Fri a holiday: the canteen is not cooking,
-     which is not the same as a missed deadline. */
+     Every serving day is open, Monday included: with 24/7 ordering a day that
+     has already been served is still orderable, which is the school's decision
+     and not an oversight. Friday is a holiday — the canteen is not cooking,
+     and that is the one thing that still closes a day. */
   const WEEK_MENU = {
     monday: "2026-09-14",
     days: [
@@ -298,8 +302,8 @@ window.SKYRO = window.SKYRO || {};
         key: "2026-09-14",
         label: "Pondelok 14. septembra 2026",
         isServing: true,
-        open: false,
-        deadline: "2026-09-14T06:00:00.000Z",
+        open: true,
+        deadline: "2026-09-14T22:00:00.000Z",
         weekday: "Po",
         dateNumber: 14,
         shortLabel: "14. septembra 2026",
@@ -310,8 +314,8 @@ window.SKYRO = window.SKYRO || {};
         key: "2026-09-15",
         label: "Utorok 15. septembra 2026",
         isServing: true,
-        open: false,
-        deadline: "2026-09-15T06:00:00.000Z",
+        open: true,
+        deadline: "2026-09-15T22:00:00.000Z",
         weekday: "Ut",
         dateNumber: 15,
         shortLabel: "15. septembra 2026",
@@ -323,7 +327,7 @@ window.SKYRO = window.SKYRO || {};
         label: "Streda 16. septembra 2026",
         isServing: true,
         open: true,
-        deadline: "2026-09-16T06:00:00.000Z",
+        deadline: "2026-09-16T22:00:00.000Z",
         weekday: "St",
         dateNumber: 16,
         shortLabel: "16. septembra 2026",
@@ -335,7 +339,7 @@ window.SKYRO = window.SKYRO || {};
         label: "Štvrtok 17. septembra 2026",
         isServing: true,
         open: true,
-        deadline: "2026-09-17T06:00:00.000Z",
+        deadline: "2026-09-17T22:00:00.000Z",
         weekday: "Št",
         dateNumber: 17,
         shortLabel: "17. septembra 2026",
@@ -347,7 +351,7 @@ window.SKYRO = window.SKYRO || {};
         label: "Piatok 18. septembra 2026",
         isServing: false,
         open: false,
-        deadline: "2026-09-18T06:00:00.000Z",
+        deadline: "2026-09-18T22:00:00.000Z",
         weekday: "Pi",
         dateNumber: 18,
         shortLabel: "18. septembra 2026",
@@ -373,7 +377,7 @@ window.SKYRO = window.SKYRO || {};
      `meta` is the server's own wording (smartTimeLabels), already relative to
      the stopped clock above; `createdAt` is the ISO the label came from. */
   const ANNOUNCEMENTS = [
-    { id: "a1", title: "Objednávky sa uzatvárajú o 8:00 v deň obeda", body: "Obed si môžete objednať hneď ako je menu zverejnené, až do 8:00 ráno v deň, na ktorý obed je. Po 8:00 sa objednávky na ten deň zatvárajú. Platí pre všetky ročníky.", important: true, author: "Admin", createdAt: "2026-09-15T09:12:00.000Z", meta: "dnes 09:12" },
+    { id: "a1", title: "Objednávanie je teraz bez uzávierky", body: "Obed si môžete objednať kedykoľvek — ráno, večer aj cez víkend. Žiadna uzávierka už neplatí. Objednať sa nedá len v deň, keď sa nevarí, alebo keď je jedlo vypredané. Platí pre všetky ročníky.", important: true, author: "Admin", createdAt: "2026-09-15T09:12:00.000Z", meta: "dnes 09:12" },
     { id: "a2", title: "Tri nové vegetariánske jedlá od októbra", body: "Do ponuky pribudnú tri bezmäsité jedlá. Hlasovanie o štvrtom nájdete v školskom Classroome do piatka.", important: false, author: "Admin", createdAt: "2026-09-14T08:05:00.000Z", meta: "včera 08:05" },
     { id: "a3", title: "Výdaj obedov počas testovania", body: "V utorok 15. septembra sa vydáva až od 12:20 kvôli celoškolskému testovaniu v telocvični.", important: false, author: "Admin", createdAt: "2026-09-11T13:05:00.000Z", meta: "11. septembra 2026 13:05" },
     { id: "a4", title: "Jesenné prázdniny bez výdaja", body: "Od 28. do 31. októbra sa obedy nevydávajú. Objednávky na tieto dni sa zrušia automaticky.", important: false, author: "Admin", createdAt: "2026-09-08T10:22:00.000Z", meta: "8. septembra 2026 10:22" }
